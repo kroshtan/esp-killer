@@ -27,6 +27,69 @@ If the format differs, update `shared/playerdata.py`, `tools/rcon_format.py` and
 The parser logs unparseable lines as reasons plus field *keys* (never values), which is usually enough to see
 what changed.
 
+## Scoring (phase 2)
+
+### Method
+
+Positions are resampled per server onto a 5 s grid (`server/scoring/trajectories.py`). Three behaviours are
+turned into **counts** per player (`server/scoring/features.py`):
+
+- **Beeline:** the player lines up on someone who is out of sight (beyond `awareness_m`, and not within it for the
+  last 5 minutes) and stays lined up until that player comes into range. Evidence stops at sighting, because
+  whatever happens after that (a charge, a fight) is legitimate. Excluded: the target coming to the player (head-on
+  meetings, being hunted), the player already heading that way before the target was in their path (walking into
+  an ambush, or up to someone resting on their route), and group mates (pairs who spent 10+ minutes together).
+- **Ambush:** a wait of at least a minute that ends with the arrival of someone who was out of range when it began.
+- **Time to contact:** from each spawn to first contact, ranked against the org's other spawns of the same class.
+
+Beeline and ambush counts are compared with a **time-shifted null**: the same statistic computed against every
+other trajectory shifted by 10, 20 and 30 minutes. The shift keeps where people go (waterholes, trails) and breaks
+only where they are *now*, which is the one thing an honest player cannot know about someone out of sight. The
+evidence is the count z-score `(observed − null) / √(null + 1)`. For time to contact it is the z-score of the mean
+rank, which is uniform under the null.
+
+Counts are **additive**. Each scoring run processes complete 2-hour windows (with 30 minutes of leading context
+that is not counted), stores each player's counts, and scores from the sum over the last 7 days. A cheater's excess
+over the null grows with playing time and an honest player's does not, which is where the power comes from. Each
+z becomes a sub-score that rises from 0 at z = 2 to 1 at z = 6 (3.5 for time to contact). They are combined with a
+weighted noisy-OR: beeline 1.0, ambush 0.9, time to contact 0.35. So time to contact alone (fast, aggressive
+honest players) can never cross the 0.6 flag threshold.
+
+### Evaluation on simulated servers
+
+`python -m tools.sim.evaluate --seeds 12 --first-seed 500 --hours 6`: 12 servers × 6 hours, each with 23 honest
+players (roamers, waterhole regulars, campers, hunters who chase anyone they see, groups who regroup over voice
+chat) and three cheaters. The thresholds were tuned on seeds 100–107; these seeds were not used for tuning.
+
+| | first 2 h window | accumulated over 6 h |
+|---|---|---|
+| beeline cheater: AUC vs honest / flagged | 0.93 / 33% | **1.00 / 100%** |
+| ambush cheater | 0.99 / 75% | **1.00 / 100%** |
+| part-time cheater (ESP 40% of the time) | 0.83 / 8% | **0.97 / 67%** |
+| honest players flagged | 1 / 276 | **1 / 276** |
+
+Two things drove the design and are worth knowing when reading flags:
+
+- **Cheaters create beelines for their victims.** Honest players "arrive" at a beeline cheater (it comes to them)
+  and walk straight into an ambusher (it stood on their route). Hence the target-approach and turn-onto-target
+  rules. Before those rules, a victim's beeline z grew as fast as some cheaters'.
+- **Legitimate reactions can't be reproduced by the null.** Nobody reacts to a time-shifted phantom, so anything
+  that follows a sighting (a hunter's charge) must not count as evidence. Hence evidence stops at sighting range.
+
+### Limitations
+
+- **Simulation is not reality.** The honest archetypes are my guess at the hard cases. Real thresholds should be
+  tuned on real servers with admin feedback (`mark-false-positive`, and bans once there is a way to record them).
+- **Latency.** A window is scored only once it is complete, plus a 5 minute lag, so a flag needs at least one full
+  2-hour window of play. Positions that arrive after their window was processed (an agent that was offline for
+  longer than the lag) are stored but never scored.
+- **Respawn detection** relies on gaps, teleports and class changes. A respawn inside a gap shorter than
+  `max_gap_s` (30 s) is interpolated over and missed.
+- **Awareness range is one number.** In the game it depends on class, terrain, calls and scent. Per-class values
+  are a natural next step.
+- **Streamers.** Following a streamer's broadcast position is information leakage too, and it will look the same.
+- **Scoring config is global** (the `scoring:` section of config.yaml), not per org.
+
 ## Decisions
 
 - **Clean-room protocol implementation.** The reference clients were read as protocol documentation only. No
@@ -66,6 +129,8 @@ what changed.
 - The player list (`0x40`) format is unknown and isn't parsed. `capture` saves it for inspection.
 
 ## Future directions
+
+- Per-class awareness ranges, and a map-aware null (e.g. shifting players within the same region).
 
 - **Label-free model: information leakage.** Train a self-supervised next-movement model on what a player could
   legitimately know (own history, map context, players within awareness range), and a second model that also

@@ -8,3 +8,10 @@ orgs:
     servers:
       example-1:
         key_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# Optional: scoring thresholds for all orgs (see server/scoring/config.py for every field and its meaning).
+# Leave it out to use the public defaults; tune your own values here and keep them private.
+# scoring:
+#   awareness_m: 300.0
+#   flag_threshold: 0.6
+#   horizon_days: 7.0
