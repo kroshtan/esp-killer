@@ -40,15 +40,19 @@ def test_concurrent_first_start_migrates_once(tmp_path: Path) -> None:
 
     errors: list[BaseException] = []
 
-    def open_db() -> None:
+    def open_db(path: Path) -> None:
         try:
-            Database(tmp_path / "race.db")
+            Database(path)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
-    threads = [threading.Thread(target=open_db) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Several processes opening a brand-new file at once must neither fail nor migrate twice. Repeat the race,
+    # because it only loses occasionally.
+    for trial in range(10):
+        path = tmp_path / f"race-{trial}.db"
+        threads = [threading.Thread(target=open_db, args=(path,)) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
     assert errors == []

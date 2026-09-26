@@ -17,6 +17,7 @@ the SQL itself sticks to what both databases support.
 """
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -181,7 +182,7 @@ class Database:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
+            _enable_wal(conn)
             self._migrate(conn)
 
     @contextmanager
@@ -241,6 +242,27 @@ class Database:
             conn.rollback()
             raise
         conn.commit()
+
+
+def _enable_wal(conn: sqlite3.Connection, attempts: int = 100) -> None:
+    """
+    Switch the file to WAL mode (persistent, so this is a no-op after the first time).
+
+    Switching needs an exclusive lock, and SQLite reports "database is locked" straight away instead of waiting
+    for it, so when several processes open a brand-new file at once, retry briefly.
+
+    :param conn: an open connection
+    :param attempts: how many times to try, 50 ms apart
+    :raises sqlite3.OperationalError: if the mode still cannot be switched
+    """
+    for attempt in range(attempts):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or attempt == attempts - 1:
+                raise
+            time.sleep(0.05)
 
 
 def _statements(script: str) -> list[str]:
