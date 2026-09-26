@@ -1,0 +1,25 @@
+# Real configs hold secrets (webhook URLs, key hashes, RCON password). Commit the *.example.* files only.
+config.yaml
+agent.toml
+.env
+
+# Runtime data: positions are personal data and must never be committed.
+data/
+*.db
+*.db-wal
+*.db-shm
+captures/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+.DS_Store
