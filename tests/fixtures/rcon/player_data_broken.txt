@@ -1,0 +1,8 @@
+[2025.06.01-12.34.56] PlayerData
+Name: Good, PlayerID: 76561198000000020, Location: X=1 Y=2 Z=3, Class: BP_Gallimimus_C, Growth: 0.5
+Name: NoLocation, PlayerID: 76561198000000021, Class: BP_Gallimimus_C, Growth: 0.5
+Name: MissingZ, PlayerID: 76561198000000022, Location: X=1 Y=2, Class: BP_Gallimimus_C
+Name: BadId, PlayerID: not an id!, Location: X=1 Y=2 Z=3
+Name: Good, PlayerID: 76561198000000020, Location: X=1 Y=2 Z=3
+this line is garbage
+Name: Truncated, PlayerID: 76561198000000023, Locat

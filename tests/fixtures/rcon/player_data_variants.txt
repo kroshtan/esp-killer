@@ -1,0 +1,4 @@
+[2025.06.01-12.34.56] PlayerData Name: SameLine, PlayerID: 76561198000000010, Location: X=1 Y=2 Z=3, Class: BP_Troodon_C, Growth: 0.5
+Name: Reordered, PlayerID: 76561198000000011, Class: Deinosuchus, Growth: 80%, Location: (X=10.5, Y=-20.25, Z=0)
+Name: NoClass, PlayerID: 76561198000000012, Location: X=4 Y=5 Z=6
+Name: Extra, PlayerID: 76561198000000013, Location: X=7 Y=8 Z=9, Class: BP_Maiasaura_C, Growth: 0.9, Mood: Grumpy, Health: 1.0

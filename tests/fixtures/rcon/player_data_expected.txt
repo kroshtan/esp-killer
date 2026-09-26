@@ -1,0 +1,4 @@
+[2025.06.01-12.34.56] PlayerData
+Name: Alice, PlayerID: 76561198000000001, Location: X=-12345.6 Y=78901.2 Z=345.0, Class: BP_Carnotaurus_C, Growth: 0.75, Health: 1.0, Stamina: 0.9, Hunger: 0.8, Thirst: 0.7
+Name: Bob, the, Builder, PlayerID: 76561198000000002, Location: X=1.0 Y=2.0 Z=3.0, Class: BP_Stegosaurus_C, Growth: 0.50, Health: 0.4, Stamina: 0.2, Hunger: 0.1, Thirst: 0.0
+Name: Ünïcødé 恐竜, PlayerID: 0002a1b2c3d4e5f60718293a4b5c6d7e, Location: X=-1.5e3 Y=+2.25E2 Z=-0.5, Class: BP_Omniraptor_C, Growth: 1.0, Health: 1.0, Stamina: 1.0, Hunger: 1.0, Thirst: 1.0
