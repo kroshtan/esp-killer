@@ -1,11 +1,9 @@
 """The scoring job end to end on the database: simulated positions in, windows, scores and flags out."""
 
-import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -19,7 +17,7 @@ from server.scoring.config import ScoringConfig
 from server.scoring.job import apply_flags, run_scoring
 from server.settings import ServerSettings
 from server.worker import Worker
-from shared.models import PlayerSample, Snapshot
+from tests.helpers import ingest_frame
 from tools.sim.scenarios import archetypes, mixed_world, record
 
 ORG = "sim-org"
@@ -29,30 +27,11 @@ LAG = timedelta(minutes=5)
 CONFIG = OrgConfig(orgs={ORG: OrgEntry(servers={"s1": ServerEntry()})})
 
 
-def ingest_frame(repo: Repository, frame: pd.DataFrame, server_id: str) -> None:
-    """Store simulated samples (metres) as the agent would have uploaded them (game units)."""
-    snapshots = [
-        Snapshot(
-            snapshot_id=uuid.uuid4(),
-            captured_at=START + timedelta(seconds=float(group["t"].to_numpy(dtype=float)[0])),
-            players=[
-                PlayerSample(
-                    player_id=pid, player_name=f"name {pid[-3:]}", dino_class=cls, x=x * 100, y=y * 100, z=0.0
-                )
-                for pid, cls, x, y in zip(group["player_id"], group["dino_class"], group["x"], group["y"], strict=True)
-            ],
-        )
-        for _, group in frame.groupby("t")
-    ]
-    for i in range(0, len(snapshots), 2000):
-        repo.ingest(ORG, server_id, snapshots[i : i + 2000], START)
-
-
 @pytest.fixture(scope="module")
 def database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Path, dict[str, str]]]:
     path = tmp_path_factory.mktemp("db") / "espk.db"
     world = mixed_world(900)
-    ingest_frame(Repository(Database(path)), record(world, HOURS * 3600), "s1")
+    ingest_frame(Repository(Database(path)), record(world, HOURS * 3600), ORG, "s1", START)
     yield path, archetypes(world)
 
 
@@ -149,6 +128,6 @@ def test_worker_runs_the_job_for_orgs_in_the_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     save_config(config_path, CONFIG)
     settings = ServerSettings(config_path=config_path, database_path=tmp_path / "w.db")
-    worker = Worker(settings)
-    (result,) = worker.run_once(START)
-    assert (result.org_id, result.windows) == (ORG, 0)  # no data yet
+    report = Worker(settings).run_once(START)
+    assert [(r.org_id, r.windows) for r in report.scoring] == [(ORG, 0)]  # no data yet
+    assert (report.queued, report.delivery) == (0, {"sent": 0, "retry": 0, "failed": 0})

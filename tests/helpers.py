@@ -1,7 +1,10 @@
 import gzip
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pandas as pd
+
+from server.db.repository import Repository
 from shared.models import IngestBatch, PlayerSample, Snapshot
 
 
@@ -29,3 +32,22 @@ def auth(key: str, *, gzip_body: bool = True) -> dict[str, str]:
     if gzip_body:
         headers["Content-Encoding"] = "gzip"
     return headers
+
+
+def ingest_frame(repo: Repository, frame: pd.DataFrame, org_id: str, server_id: str, start: datetime) -> None:
+    """Store simulated samples (metres, t in seconds from ``start``) as the agent would upload them (game units)."""
+    snapshots = [
+        Snapshot(
+            snapshot_id=uuid.uuid4(),
+            captured_at=start + timedelta(seconds=float(group["t"].to_numpy(dtype=float)[0])),
+            players=[
+                PlayerSample(
+                    player_id=pid, player_name=f"name {pid[-3:]}", dino_class=cls, x=x * 100, y=y * 100, z=0.0
+                )
+                for pid, cls, x, y in zip(group["player_id"], group["dino_class"], group["x"], group["y"], strict=True)
+            ],
+        )
+        for _, group in frame.groupby("t")
+    ]
+    for i in range(0, len(snapshots), 2000):
+        repo.ingest(org_id, server_id, snapshots[i : i + 2000], start)

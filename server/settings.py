@@ -24,11 +24,21 @@ class ServerSettings(BaseSettings):
     # Snapshots stamped further in the future than this (agent clock skew) are rejected, as are ones older than
     # the retention period, which would be deleted straight away.
     max_clock_skew_s: float = Field(default=300.0, ge=0)
-    retention_days: int = Field(default=14, ge=1)
+    retention_days: int = Field(default=14, ge=1)  # raw positions
+    score_retention_days: int = Field(default=90, ge=1)
+    alert_retention_days: int = Field(default=90, ge=1)
+    flag_retention_days: int = Field(default=365, ge=1)
 
     # Worker: how often the scoring job runs, and how long after a window ends before it is scored (uploads can
     # be a little late).
     scoring_interval_s: float = Field(default=300.0, gt=0)
     scoring_lag_s: float = Field(default=300.0, ge=0)
+
+    # Alerts: at most one flag alert per player per org per cooldown; a flagged player seen again after this long
+    # away is a rejoin; failed deliveries are retried this many times; images show the last N minutes.
+    alert_cooldown_h: float = Field(default=24.0, ge=0)
+    rejoin_gap_s: float = Field(default=600.0, gt=0)
+    alert_max_attempts: int = Field(default=8, ge=1)
+    alert_image_minutes: float = Field(default=30.0, gt=0)
 
     log_level: str = "INFO"

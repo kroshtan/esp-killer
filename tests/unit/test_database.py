@@ -33,3 +33,22 @@ def test_transaction_rolls_back_on_error(tmp_path: Path) -> None:
         raise RuntimeError
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM scoring_state").fetchone()[0] == 0
+
+
+def test_concurrent_first_start_migrates_once(tmp_path: Path) -> None:
+    import threading  # noqa: PLC0415
+
+    errors: list[BaseException] = []
+
+    def open_db() -> None:
+        try:
+            Database(tmp_path / "race.db")
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=open_db) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []

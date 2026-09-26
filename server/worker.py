@@ -1,50 +1,135 @@
 """
 The background worker: ``python -m server.worker``.
 
-Runs the scoring job every ``scoring_interval_s``. It is a separate process from the API so a long scoring run
-never delays ingest; both use the same database (SQLite in WAL mode allows one writer and concurrent readers).
+Every ``scoring_interval_s`` it scores new windows, queues alerts for new flags and for flagged players who
+rejoined, delivers due alerts, and once a day applies data retention. It is a separate process from the API so
+none of this ever delays ingest; both use the same SQLite database (WAL mode: one writer, concurrent readers).
 Run exactly one worker per database.
 """
 
+import asyncio
 import logging
 import signal
 import threading
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import FrameType
 
+import httpx
+
+from server import __version__
+from server.alerts.discord import install_log_redaction
+from server.alerts.dispatch import DispatchSettings, deliver_due
+from server.alerts.pipeline import detect_rejoins, enqueue_flag_alerts
+from server.alerts.settings import SmtpSettings
+from server.db.alerts import AlertRepository
 from server.db.database import Database
 from server.db.scoring import ScoringRepository
 from server.orgconfig import ConfigStore
+from server.retention import RetentionPolicy, run_retention
 from server.scoring.job import OrgRunResult, run_scoring
 from server.settings import ServerSettings
 
 logger = logging.getLogger("server.worker")
 
+RETENTION_EVERY = timedelta(days=1)
+
+
+@dataclass
+class RunReport:
+    scoring: list[OrgRunResult] = field(default_factory=list)
+    queued: int = 0
+    delivery: dict[str, int] = field(default_factory=dict)
+    retention: dict[str, int] | None = None
+
 
 class Worker:
-    def __init__(self, settings: ServerSettings, repo: ScoringRepository | None = None) -> None:
+    def __init__(self, settings: ServerSettings, smtp: SmtpSettings | None = None) -> None:
         self.settings = settings
+        self.smtp = smtp or SmtpSettings()
         self.config = ConfigStore(settings.config_path)
-        self.repo = repo or ScoringRepository(Database(settings.database_path))
+        self.db = Database(settings.database_path)
+        self.scoring = ScoringRepository(self.db)
+        self.alerts = AlertRepository(self.db)
         self.stop = threading.Event()
+        self._last_retention: datetime | None = None
 
-    def run_once(self, now: datetime | None = None) -> list[OrgRunResult]:
+    def run_once(self, now: datetime | None = None, http: httpx.AsyncClient | None = None) -> RunReport:
         """
         Run every job once.
 
         :param now: current time; defaults to the wall clock
-        :return: scoring results per org
+        :param http: HTTP client for Discord; tests inject one, otherwise a fresh client is used
+        :return: what happened
         """
         now = now or datetime.now(UTC)
-        return run_scoring(self.repo, self.config.config, now, lag=timedelta(seconds=self.settings.scoring_lag_s))
+        config = self.config.config
+        s = self.settings
+        report = RunReport()
+        report.scoring = run_scoring(self.scoring, config, now, lag=timedelta(seconds=s.scoring_lag_s))
+
+        email_enabled = self.smtp.is_configured
+        new_flags = [flag_id for r in report.scoring for flag_id in r.new_flag_ids]
+        report.queued = len(
+            enqueue_flag_alerts(
+                self.alerts,
+                config,
+                new_flags,
+                now,
+                email_enabled=email_enabled,
+                cooldown=timedelta(hours=s.alert_cooldown_h),
+            )
+        )
+        report.queued += len(
+            detect_rejoins(
+                self.alerts, config, now, email_enabled=email_enabled, rejoin_gap=timedelta(seconds=s.rejoin_gap_s)
+            )
+        )
+        report.delivery = asyncio.run(self._deliver(now, http))
+
+        if self._last_retention is None or now - self._last_retention >= RETENTION_EVERY:
+            report.retention = run_retention(self.db, self.retention_policy(), now)
+            self._last_retention = now
+        return report
+
+    def retention_policy(self) -> RetentionPolicy:
+        """
+        Retention periods from the settings and the scoring horizon.
+
+        :return: the policy
+        """
+        s = self.settings
+        return RetentionPolicy(
+            positions_days=s.retention_days,
+            # Evidence must outlive the scoring horizon, or scores would silently lose their oldest windows.
+            evidence_days=self.config.config.scoring_config.horizon_days + 1,
+            scores_days=s.score_retention_days,
+            alerts_days=s.alert_retention_days,
+            flags_days=s.flag_retention_days,
+        )
+
+    async def _deliver(self, now: datetime, http: httpx.AsyncClient | None) -> dict[str, int]:
+        settings = DispatchSettings(
+            max_attempts=self.settings.alert_max_attempts, image_minutes=self.settings.alert_image_minutes
+        )
+        if http is not None:
+            return await deliver_due(
+                self.alerts, self.scoring, self.config.config, smtp=self.smtp, http=http, now=now, settings=settings
+            )
+        async with httpx.AsyncClient(timeout=30.0, headers={"User-Agent": f"espk/{__version__}"}) as client:
+            return await deliver_due(
+                self.alerts, self.scoring, self.config.config, smtp=self.smtp, http=client, now=now, settings=settings
+            )
 
     def run_forever(self) -> None:
         """Run the jobs every ``scoring_interval_s`` until :attr:`stop` is set. A failing run is logged, not fatal."""
         while not self.stop.is_set():
             try:
-                self.run_once()
+                report = self.run_once()
+                if report.queued or any(report.delivery.values()):
+                    logger.info("alerts: %d queued, delivery %s", report.queued, report.delivery)
             except Exception:
-                logger.exception("scoring run failed")
+                logger.exception("worker run failed")
             self.stop.wait(self.settings.scoring_interval_s)
 
 
@@ -52,6 +137,9 @@ def main() -> None:
     """Command-line entry point."""
     settings = ServerSettings()
     logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs request URLs, and a Discord webhook URL is a secret.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    install_log_redaction()
     worker = Worker(settings)
 
     def _stop(signum: int, _frame: FrameType | None) -> None:
@@ -60,7 +148,11 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
-    logger.info("worker started: scoring every %.0fs", settings.scoring_interval_s)
+    logger.info(
+        "worker started: every %.0fs; email alerts %s",
+        settings.scoring_interval_s,
+        "enabled" if worker.smtp.is_configured else "disabled (ESPK_SMTP_* not set)",
+    )
     worker.run_forever()
 
 

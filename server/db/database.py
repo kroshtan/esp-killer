@@ -120,6 +120,31 @@ MIGRATIONS: list[str] = [
     CREATE INDEX ix_flags_org_player ON flags (org_id, player_id);
     CREATE INDEX ix_flags_status ON flags (status);
     """,
+    # 2: alert outbox, and presence tracking for rejoin alerts.
+    """
+    -- One row per alert per channel. Destinations (webhook URLs, addresses) are not stored: they are secrets and
+    -- live in config.yaml, read at send time.
+    CREATE TABLE alerts (
+        id              INTEGER PRIMARY KEY,
+        org_id          TEXT NOT NULL,
+        flag_id         INTEGER NOT NULL REFERENCES flags (id),
+        player_id       TEXT NOT NULL,
+        kind            TEXT NOT NULL CHECK (kind IN ('flag', 'rejoin')),
+        channel         TEXT NOT NULL CHECK (channel IN ('discord', 'email')),
+        server_id       TEXT,  -- for rejoin alerts: where the player showed up
+        status          TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'failed')),
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL,
+        next_attempt_at TEXT NOT NULL,
+        sent_at         TEXT,
+        last_error      TEXT
+    );
+    CREATE INDEX ix_alerts_due ON alerts (status, next_attempt_at);
+    CREATE INDEX ix_alerts_org_player ON alerts (org_id, player_id, kind, created_at);
+
+    -- When a flagged player was last seen; a sighting after a long enough gap is a rejoin.
+    ALTER TABLE flags ADD COLUMN last_seen_at TEXT;
+    """,
 ]
 
 
@@ -201,8 +226,36 @@ class Database:
 
     @staticmethod
     def _migrate(conn: sqlite3.Connection) -> None:
-        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        for number, script in enumerate(MIGRATIONS[version:], start=version + 1):
-            # executescript commits any open transaction first, so the migration and its version bump are one
-            # script: BEGIN ... COMMIT.
-            conn.executescript(f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {number};\nCOMMIT;")
+        if int(conn.execute("PRAGMA user_version").fetchone()[0]) >= len(MIGRATIONS):
+            return
+        # The API and the worker may both start on a fresh file: take the write lock, then re-read the version, so
+        # only one of them migrates. DDL is transactional in SQLite, so a failed migration leaves nothing behind.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            for number, script in enumerate(MIGRATIONS[version:], start=version + 1):
+                for statement in _statements(script):
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version = {number}")
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
+
+
+def _statements(script: str) -> list[str]:
+    """
+    Split a migration into statements (``executescript`` would commit the surrounding transaction).
+
+    :param script: SQL statements separated by semicolons
+    :return: the statements
+    """
+    statements, buffer = [], ""
+    for line in script.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            statements.append(buffer.strip())
+            buffer = ""
+    if buffer.strip():
+        statements.append(buffer.strip())
+    return statements

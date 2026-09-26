@@ -140,7 +140,7 @@ def to_trajectories(frame: pd.DataFrame, cfg: ScoringConfig) -> list[Trajectorie
     samples = pd.DataFrame(
         {
             "server_id": frame["server_id"],
-            "t": (pd.to_datetime(frame["server_ts"], utc=True) - pd.Timestamp(0, tz="UTC")).dt.total_seconds(),
+            "t": epoch_seconds(frame["server_ts"]),
             "player_id": frame["player_id"],
             "x": frame["x"] / cfg.units_per_metre,
             "y": frame["y"] / cfg.units_per_metre,
@@ -148,6 +148,16 @@ def to_trajectories(frame: pd.DataFrame, cfg: ScoringConfig) -> list[Trajectorie
         }
     )
     return [from_frame(group, str(server_id), cfg) for server_id, group in samples.groupby("server_id", sort=True)]
+
+
+def epoch_seconds(timestamps: pd.Series) -> pd.Series:
+    """
+    Convert stored UTC timestamps to epoch seconds.
+
+    :param timestamps: timestamps as stored (UTC ISO text) or datetimes
+    :return: float seconds since the epoch
+    """
+    return (pd.to_datetime(timestamps, utc=True) - pd.Timestamp(0, tz="UTC")).dt.total_seconds()
 
 
 def apply_flags(

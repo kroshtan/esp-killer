@@ -196,6 +196,28 @@ def beeline_evidence(
     return result
 
 
+def beeline_episodes(tr: Trajectories, config: ScoringConfig, player_id: str) -> list[BeelineEpisode]:
+    """
+    One player's beeline episodes, for showing to a human (the alert image), not for scoring.
+
+    :param tr: trajectories
+    :param config: scoring config
+    :param player_id: the player
+    :return: the episodes (grid indices into ``tr.t``; ``target`` indexes ``tr.player_ids``)
+    :raises KeyError: if the player is not in ``tr``
+    """
+    if player_id not in tr.player_ids:
+        raise KeyError(player_id)
+    if len(tr.t) < 2:  # noqa: PLR2004
+        return []
+    i = tr.player_ids.index(player_id)
+    disp, moving = _headings(tr, config)
+    assoc = associates(tr, config)
+    return _beeline_episodes(
+        tr, config, i, others=tr.pos, heading=disp[:, i], moving=moving[:, i], assoc_row=assoc[i], count_from=0
+    )
+
+
 def _beeline_episodes(
     tr: Trajectories,
     config: ScoringConfig,

@@ -90,6 +90,29 @@ Two things drove the design and are worth knowing when reading flags:
 - **Streamers.** Following a streamer's broadcast position is information leakage too, and it will look the same.
 - **Scoring config is global** (the `scoring:` section of config.yaml), not per org.
 
+## Alerts and retention (phase 3)
+
+- **Outbox.** The worker queues alerts in the `alerts` table (one row per alert per channel) and delivers them in
+  the same run. A transient failure (5xx, network, Discord 429) is retried with exponential backoff, or after
+  Discord's `retry_after`, up to 8 attempts. A permanent one (deleted webhook, refused address) is marked failed
+  at once. Destinations are read from config.yaml at send time and never stored in the database.
+- **When alerts fire.** A new flag alerts on every configured channel, at most once per player per org per
+  24 hours. A flagged player seen again after 10+ minutes away gets a *rejoin* alert naming the server; presence
+  is tracked per flag in `flags.last_seen_at`, so each return alerts once. Flags marked as false positives go quiet.
+  Rejoin latency is one worker interval (5 minutes by default).
+- **Evidence image.** New-flag alerts carry a PNG of the player's last 30 minutes on the server where they spent
+  most of them: the path shaded by time, the beeline episodes behind the evidence (with where the target was, and
+  the awareness radius), and up to 8 players who came near. Coordinates go through a per-server `map_transform`
+  (config.yaml, identity by default) so a calibrated map background can be added later. If rendering fails, the
+  alert is sent without an image.
+- **Secrets in logs.** httpx logs request URLs, and a Discord webhook URL is a credential: the worker sets the
+  httpx logger to WARNING and installs a filter that redacts webhook URLs anyway. SMTP passwords are never logged.
+- **Retention** runs daily in the worker, in 5,000-row batches: raw positions and ingest dedupe records after
+  `ESPK_RETENTION_DAYS` (14), evidence one day after the scoring horizon, scores and alerts after 90 days, flags
+  365 days after their last update (and only once no alert refers to them).
+- **Migrations** take the write lock and re-read `user_version` first, so the API and the worker can start on a
+  fresh database at the same time.
+
 ## Decisions
 
 - **Clean-room protocol implementation.** The reference clients were read as protocol documentation only. No

@@ -18,6 +18,7 @@ from typing import Annotated, Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StringConstraints
 
+from server.alerts.transform import MapTransform
 from server.keys import KEY_HASH_PATTERN
 from server.scoring.config import ScoringConfig
 
@@ -38,6 +39,8 @@ class ServerEntry(BaseModel):
 
     # None means the key was revoked; the server stays listed so its history keeps its name.
     key_hash: Annotated[str, StringConstraints(pattern=KEY_HASH_PATTERN)] | None = None
+    # How this server's map coordinates are drawn in alert images; plain axes in metres until calibrated.
+    map_transform: MapTransform | None = None
 
 
 class OrgEntry(BaseModel):

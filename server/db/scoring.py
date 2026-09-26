@@ -37,6 +37,7 @@ class Flag:
     updated_at: datetime
     resolved_at: datetime | None
     note: str | None
+    last_seen_at: datetime | None = None
 
 
 def _placeholders(n: int) -> str:
@@ -225,7 +226,7 @@ class ScoringRepository:
                 " ORDER BY created_at DESC, id DESC",
                 [org_id, *ids],
             ).fetchall()
-        return [_flag(row) for row in rows]
+        return [flag_from_row(row) for row in rows]
 
     def create_flag(self, org_id: str, player_name: str, s: PlayerScore, now: datetime) -> int:
         """
@@ -278,7 +279,7 @@ class ScoringRepository:
         clause = f" WHERE {' AND '.join(where)}" if where else ""
         with self.db.connect() as conn:
             rows = conn.execute(f"SELECT * FROM flags{clause} ORDER BY created_at DESC, id DESC", params).fetchall()
-        return [_flag(row) for row in rows]
+        return [flag_from_row(row) for row in rows]
 
     def mark_false_positive(self, flag_id: int, now: datetime, note: str | None = None) -> Flag | None:
         """
@@ -294,10 +295,16 @@ class ScoringRepository:
                 "UPDATE flags SET status = ?, resolved_at = ?, updated_at = ?, note = ? WHERE id = ? RETURNING *",
                 (FALSE_POSITIVE, ts(now), ts(now), note, flag_id),
             ).fetchone()
-        return _flag(row) if row is not None else None
+        return flag_from_row(row) if row is not None else None
 
 
-def _flag(row: sqlite3.Row) -> Flag:
+def flag_from_row(row: sqlite3.Row) -> Flag:
+    """
+    Build a :class:`Flag` from a ``flags`` row.
+
+    :param row: the row
+    :return: the flag
+    """
     return Flag(
         id=row["id"],
         org_id=row["org_id"],
@@ -311,4 +318,5 @@ def _flag(row: sqlite3.Row) -> Flag:
         updated_at=parse_ts(row["updated_at"]),
         resolved_at=parse_ts(row["resolved_at"]) if row["resolved_at"] is not None else None,
         note=row["note"],
+        last_seen_at=parse_ts(row["last_seen_at"]) if row["last_seen_at"] is not None else None,
     )
