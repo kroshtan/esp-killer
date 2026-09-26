@@ -1,0 +1,43 @@
+# Render Blueprint for the esp-killer backend.
+#
+# The service runs a prebuilt image from GHCR; Render does not build from the repository.
+# GitHub Actions builds and pushes the image on every push to main, then calls this service's deploy hook with the
+# new digest (see .github/workflows/ci.yaml; set the RENDER_DEPLOY_HOOK_URL secret).
+#
+# One service runs both the API and the worker (ESPK_ROLE=all): they share one SQLite file, and a Render disk
+# attaches to a single service. Services with a disk get no zero-downtime deploys, so each deploy drops ingest
+# for a few seconds; agents queue on disk and resend, so nothing is lost.
+#
+# config.yaml (orgs, key hashes, webhook URLs) lives on the disk and is managed with the CLI from the Render
+# shell, e.g. `python -m server add-org my-community --discord-webhook https://discord.com/api/webhooks/...`.
+services:
+  - type: web
+    name: esp-killer
+    runtime: image
+    image:
+      url: ghcr.io/kroshtan/esp-killer:latest
+    plan: starter  # disks need a paid instance type
+    region: frankfurt  # EU personal data: keep it in the EU
+    healthCheckPath: /healthz
+    disk:
+      name: espk-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: ESPK_ROLE
+        value: all
+      - key: ESPK_BEHIND_PROXY
+        value: "true"
+      - key: ESPK_RETENTION_DAYS
+        value: "14"
+      # Email alerts are optional; Discord webhooks are configured per org in config.yaml.
+      - key: ESPK_SMTP_HOST
+        sync: false  # entered in the dashboard, never committed
+      - key: ESPK_SMTP_PORT
+        value: "587"
+      - key: ESPK_SMTP_USERNAME
+        sync: false
+      - key: ESPK_SMTP_PASSWORD
+        sync: false
+      - key: ESPK_SMTP_FROM_ADDRESS
+        sync: false

@@ -1,4 +1,5 @@
-# One image, two roles: the ingest API (default CMD) and the background worker (`python -m server.worker`).
+# One image, three roles (docker/start.sh, ESPK_ROLE): the ingest API (default), the background worker, or both
+# in one container (for hosts like Render where only one service can mount the database disk).
 FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.11 /uv /usr/local/bin/uv
@@ -13,6 +14,7 @@ RUN uv sync --frozen --no-dev --no-cache
 # The server imports only server/ and shared/. agent/ and tools/ are not needed at runtime.
 COPY server/ ./server/
 COPY shared/ ./shared/
+COPY docker/start.sh ./start.sh
 
 # A fixed uid, so a bind-mounted data directory can be chowned to match (`chown 10001:10001 ./data`). /app stays
 # owned by root: the app never writes there, and chowning the venv would copy it into another layer.
@@ -33,8 +35,7 @@ EXPOSE 8000
 
 # slim has no curl. The worker has no HTTP port, so docker-compose.yaml disables this check for it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT', '8000')}/healthz\", timeout=4)"]
 
-# Access logs are off so client IPs and request details are not logged. For proxy headers behind a TLS reverse
-# proxy, see docker-compose.caddy.yaml.
-CMD ["uvicorn", "--factory", "server.app:create_app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header"]
+# Access logs are off so client IPs and request details are not logged.
+CMD ["/app/start.sh"]

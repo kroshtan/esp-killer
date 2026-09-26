@@ -32,11 +32,12 @@ services:
 
   worker:
     <<: *espk
-    command: ["python", "-m", "server.worker"]
+    environment:
+      ESPK_ROLE: worker
     # The worker serves no HTTP, so the image's /healthz check does not apply.
     healthcheck:
       disable: true
-    # Start after the API has created and migrated the database, so the two never migrate a new file at once.
+    # Start after the API is up. Migrations are safe to race, so this only keeps the startup logs tidy.
     depends_on:
       api:
         condition: service_healthy

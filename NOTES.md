@@ -154,6 +154,10 @@ Two things drove the design and are worth knowing when reading flags:
   `python -m server.worker`. The image holds only `server/` and `shared/` (no agent, tools or tests), runs as uid
   10001, and keeps `espk.db` and `config.yaml` in one `/data` volume. It is a directory mount because the CLI
   replaces `config.yaml` with a rename in the same directory, which fails on a single-file bind mount.
+- **Render.** CI pushes the image to GHCR and calls a deploy hook with its digest (`render.yaml`). One service
+  runs both roles (`ESPK_ROLE=all` in `docker/start.sh`), because a Render disk attaches to one service and both
+  processes need the SQLite file. The start script exits if either process dies, so Render restarts the pair.
+  Moving to Render Postgres would allow separate services; that is a second repository implementation (plain SQL).
 - **The worker starts after the API is healthy** (`depends_on: condition: service_healthy`). Migrations are
   race-safe on their own (they take the write lock and re-read `user_version`), so this is only tidiness.
 - **API port on 127.0.0.1 only.** Agents need HTTPS, so a TLS proxy is always in front. The optional Caddy

@@ -193,6 +193,27 @@ because the API is reachable through Caddy and from the host itself. The API aut
 key, not by client IP, so nothing security-relevant depends on those headers. Access logs are off in both
 uvicorn and the Caddyfile, so client IPs are not logged.
 
+### Deploying on Render
+
+CI builds the image on every push, pushes it to GHCR from `main` (`ghcr.io/kroshtan/esp-killer:latest` and
+`:sha-<commit>`), and then calls a Render deploy hook with the exact digest. [render.yaml](render.yaml) is the
+Blueprint:
+
+- **One web service** runs both the API and the worker (`ESPK_ROLE=all`), because they share one SQLite file and
+  a Render disk attaches to a single service. If either process dies, the container exits and Render restarts it.
+- **A persistent disk** at `/data` holds `espk.db` and `config.yaml`. Disks need a paid instance type, and a
+  service with a disk has no zero-downtime deploys. Each deploy pauses ingest for a few seconds, and agents
+  queue and resend, so nothing is lost.
+- Render terminates TLS, so there is no Caddy; `ESPK_BEHIND_PROXY=true` makes uvicorn trust its forwarded headers.
+- Region `frankfurt`, because this is EU personal data.
+
+To set it up, create the service from the Blueprint, make the GHCR package public (or give Render registry
+credentials), add the service's deploy hook URL as the `RENDER_DEPLOY_HOOK_URL` repository secret, and enter the
+`ESPK_SMTP_*` values in the dashboard if you want email alerts. Manage orgs and keys from the service's shell with
+the CLI below. Without the secret, the CI `deploy` job skips with a warning.
+
+The image's roles also work anywhere else: `ESPK_ROLE=api` (default), `worker`, or `all`; `PORT` is honoured.
+
 ### Orgs, servers and keys
 
 An **org** is one community (its admins get the alerts); it has one or more game **servers**, each with its own

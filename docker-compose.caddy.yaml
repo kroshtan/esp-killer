@@ -12,18 +12,8 @@ services:
     # Caddy and from this host; if you publish port 8000 publicly, drop these two flags or list Caddy's address
     # instead of '*'.
     # The app authenticates and rate-limits by API key, not by client IP, so the headers matter little either way.
-    command:
-      - uvicorn
-      - --factory
-      - server.app:create_app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --no-access-log
-      - --no-server-header
-      - --proxy-headers
-      - --forwarded-allow-ips=*
+    environment:
+      ESPK_BEHIND_PROXY: "true"
 
   caddy:
     image: caddy:2-alpine
