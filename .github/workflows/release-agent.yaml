@@ -96,6 +96,8 @@ jobs:
         run: echo "version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' agent/__init__.py)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
+          # Only the binaries: when CI calls this workflow, the run also holds other artifacts (Docker build records).
+          pattern: espk-agent-*
           path: release
           merge-multiple: true
       - name: Checksums
