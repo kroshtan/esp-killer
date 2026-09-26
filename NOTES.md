@@ -57,6 +57,26 @@ what changed.
 - **Schema** is created with `metadata.create_all`. Add alembic before the first schema change in production.
 - **License:** Apache-2.0.
 
+### Packaging (agent)
+
+- **One-file PyInstaller binary** per OS, so server admins download one file: `make agent-build` builds
+  `dist/espk-agent` (Linux) or `dist/espk-agent.exe` (Windows) from `packaging/espk-agent.spec`; PyInstaller
+  is in the `build` dependency group only. `make agent-smoke` runs `packaging/smoke_test.py`, which drives the
+  built binary (`--version`, `--help`, `check`, 10 s of `run`) against the fake RCON server and a local API
+  and checks that rows reached the database.
+- **Size:** about 20 MB on Linux (mostly libpython and pydantic-core). The spec explicitly excludes `server`,
+  `tools`, `tests`, numpy, pandas, matplotlib, PIL, fastapi, starlette, uvicorn, sqlalchemy, yaml, the dev
+  tools, setuptools and unused stdlib parts (tkinter, unittest, pydoc, ...). pygments stays in: rich uses it
+  for tracebacks.
+- **Releases:** pushing a tag `agent-vX.Y.Z` (must match `agent/__init__.py`) runs
+  `.github/workflows/release-agent.yaml`, which builds on ubuntu-latest and windows-latest and publishes
+  `espk-agent-X.Y.Z-{linux,windows}-x86_64[.exe]` plus `SHA256SUMS` as a GitHub Release.
+- **Windows is built in CI only** and has not been run by hand. Its smoke test runs in CI but is informational
+  (`continue-on-error`) until it has proven stable.
+- **Unsigned executables.** The Windows exe is not code-signed, so SmartScreen warns on first start and some
+  antivirus products flag PyInstaller binaries. UPX is off to reduce false positives. Code signing is a known
+  gap.
+
 ## Known limitations
 
 - Rate limiting is in process memory, which is correct only for a single API process.

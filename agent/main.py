@@ -31,6 +31,22 @@ logger = logging.getLogger("agent")
 ConfigOption = Annotated[Path | None, typer.Option("--config", "-c", help="agent TOML config file")]
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"espk-agent {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option("--version", callback=_print_version, is_eager=True, help="Print the version and exit."),
+    ] = False,
+) -> None:
+    """ESP detector agent: polls Evrima RCON (read-only) and uploads player positions."""
+
+
 def make_client(settings: AgentSettings) -> EvrimaRconClient:
     """
     Build the RCON client from settings.
