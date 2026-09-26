@@ -1,0 +1,20 @@
+# Copy to agent.toml next to the agent. Every value can be overridden by an environment variable:
+# ESPK_RCON__PASSWORD, ESPK_BACKEND__API_KEY, ESPK_POLL_INTERVAL_S, ...
+
+poll_interval_s = 3.0
+upload_interval_s = 15.0
+queue_path = "esp-agent-queue.db"
+queue_max_bytes = 104857600  # 100 MiB; the oldest data is dropped beyond this
+
+[rcon]
+# The game server's RCON (Game.ini: bRconEnabled=true, RconPassword, RconPort).
+# The password is only used to log in locally; it is never sent to the backend.
+host = "127.0.0.1"
+port = 8888
+password = "change-me"
+# The protocol has no length prefix: a response is complete once the socket is quiet this long.
+idle_timeout_s = 0.25
+
+[backend]
+url = "https://espk.example.org"
+api_key = "espk_..."
