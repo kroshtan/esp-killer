@@ -26,4 +26,9 @@ class ServerSettings(BaseSettings):
     max_clock_skew_s: float = Field(default=300.0, ge=0)
     retention_days: int = Field(default=14, ge=1)
 
+    # Worker: how often the scoring job runs, and how long after a window ends before it is scored (uploads can
+    # be a little late).
+    scoring_interval_s: float = Field(default=300.0, gt=0)
+    scoring_lag_s: float = Field(default=300.0, ge=0)
+
     log_level: str = "INFO"

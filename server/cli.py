@@ -5,12 +5,15 @@ Key management edits config.yaml; the running API picks changes up automatically
 only its hash is stored, so a lost key cannot be recovered, only replaced with ``add-server --rotate``.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from pydantic import TypeAdapter, ValidationError
 
+from server.db.engine import make_engine
+from server.db.scoring import FLAG_STATUSES, OPEN, ScoringRepository
 from server.keys import generate_key, hash_key
 from server.orgconfig import AlertDestinations, OrgEntry, ServerEntry, Slug, load_config, save_config
 from server.settings import ServerSettings
@@ -20,10 +23,17 @@ app = typer.Typer(help="Manage orgs, servers and API keys for the ESP detector b
 ConfigOption = Annotated[
     Path | None, typer.Option("--config", help="config.yaml path (default: $ESPK_CONFIG_PATH or ./config.yaml)")
 ]
+DatabaseOption = Annotated[
+    str | None, typer.Option("--database-url", help="database URL (default: $ESPK_DATABASE_URL)")
+]
 
 
 def _config_path(config: Path | None) -> Path:
     return config if config is not None else ServerSettings().config_path
+
+
+def _scoring_repo(database_url: str | None) -> ScoringRepository:
+    return ScoringRepository(make_engine(database_url or ServerSettings().database_url))
 
 
 _SLUG = TypeAdapter(Slug)
@@ -107,6 +117,44 @@ def revoke_key(
     org.servers[server_id] = ServerEntry(key_hash=None)
     save_config(path, cfg)
     typer.echo(f"revoked key for {org_id}/{server_id}")
+
+
+@app.command("list-flags")
+def list_flags(
+    org: Annotated[str | None, typer.Option(help="only this org")] = None,
+    status: Annotated[str, typer.Option(help="open, false_positive or all")] = OPEN,
+    database_url: DatabaseOption = None,
+) -> None:
+    """List flagged players with their scores and the behaviours behind them."""
+    if status != "all" and status not in FLAG_STATUSES:
+        raise _fail(f"status must be one of {', '.join(FLAG_STATUSES)} or all")
+    found = _scoring_repo(database_url).list_flags(org_id=org, status=None if status == "all" else status)
+    if not found:
+        typer.echo("no flags")
+        return
+    for f in found:
+        behaviours = ", ".join(
+            f"{name} {sub['score']:.2f}" for name, sub in f.details.items() if isinstance(sub, dict) and sub["score"]
+        )
+        servers = ",".join(f.details.get("servers", []))
+        typer.echo(
+            f"#{f.id:<5} {f.status:<14} {f.org_id}/{servers}  {f.player_name} ({f.player_id})  "
+            f"score {f.score:.2f} (max {f.max_score:.2f})  [{behaviours}]  "
+            f"flagged {f.created_at:%Y-%m-%d %H:%M}Z"
+        )
+
+
+@app.command("mark-false-positive")
+def mark_false_positive(
+    flag_id: Annotated[int, typer.Argument(help="flag id from list-flags")],
+    note: Annotated[str | None, typer.Option(help="why it was a false positive")] = None,
+    database_url: DatabaseOption = None,
+) -> None:
+    """Mark a flag as a false positive. The player is not flagged again for the configured suppression period."""
+    flag = _scoring_repo(database_url).mark_false_positive(flag_id, datetime.now(UTC), note)
+    if flag is None:
+        raise _fail(f"no flag #{flag_id}")
+    typer.echo(f"flag #{flag.id} ({flag.player_name}) marked as false positive")
 
 
 if __name__ == "__main__":

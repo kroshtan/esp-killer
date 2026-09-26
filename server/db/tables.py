@@ -8,6 +8,7 @@ in Python; :class:`UTCDateTime` stores them naive-UTC so SQLite (which has no ti
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Dialect,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Text,
     TypeDecorator,
 )
 
@@ -72,4 +74,79 @@ ingested_snapshots = Table(
     Column("captured_at", UTCDateTime, nullable=False),
     Column("received_ts", UTCDateTime, nullable=False),
     Index("ix_ingested_snapshots_captured_at", "captured_at"),
+)
+
+# --- scoring ---
+# Evidence is stored per player per scoring window, as additive counts; scores are computed from the sum over the
+# scoring horizon. None of these tables contain positions.
+
+scoring_state = Table(
+    "scoring_state",
+    metadata,
+    Column("org_id", String(64), primary_key=True),
+    Column("processed_until", UTCDateTime, nullable=False),
+)
+
+evidence = Table(
+    "evidence",
+    metadata,
+    Column("org_id", String(64), primary_key=True),
+    Column("player_id", String(64), primary_key=True),
+    Column("window_end", UTCDateTime, primary_key=True),
+    Column("servers", String(1024), nullable=False),  # comma-separated server ids
+    Column("moving_s", Float, nullable=False),
+    Column("beeline_episodes", Integer, nullable=False),
+    Column("beeline_null", Float, nullable=False),
+    Column("beeline_start_sum_m", Float, nullable=False),
+    Column("ambush_waits", Integer, nullable=False),
+    Column("ambush_hits", Integer, nullable=False),
+    Column("ambush_null", Float, nullable=False),
+    Index("ix_evidence_org_window", "org_id", "window_end"),
+)
+
+spawn_episodes = Table(
+    "spawn_episodes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", String(64), nullable=False),
+    Column("player_id", String(64), nullable=False),
+    Column("window_end", UTCDateTime, nullable=False),
+    Column("dino_class", String(64)),
+    Column("duration_s", Float, nullable=False),
+    Column("censored", Boolean, nullable=False),
+    Index("ix_spawn_episodes_org_window", "org_id", "window_end"),
+)
+
+player_scores = Table(
+    "player_scores",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", String(64), nullable=False),
+    Column("player_id", String(64), nullable=False),
+    Column("computed_at", UTCDateTime, nullable=False),
+    Column("score", Float, nullable=False),
+    Column("beeline", Float),
+    Column("ttc", Float),
+    Column("ambush", Float),
+    Column("details", Text, nullable=False),  # JSON: the key numbers behind the score
+    Index("ix_player_scores_org_player", "org_id", "player_id", "computed_at"),
+)
+
+flags = Table(
+    "flags",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", String(64), nullable=False),
+    Column("player_id", String(64), nullable=False),
+    Column("player_name", String(128), nullable=False),
+    Column("status", String(16), nullable=False),  # "open" or "false_positive"
+    Column("score", Float, nullable=False),  # latest
+    Column("max_score", Float, nullable=False),
+    Column("details", Text, nullable=False),  # JSON, latest
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
+    Column("resolved_at", UTCDateTime),
+    Column("note", String(500)),
+    Index("ix_flags_org_player", "org_id", "player_id"),
+    Index("ix_flags_status", "status"),
 )

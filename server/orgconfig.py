@@ -19,6 +19,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StringConstraints
 
 from server.keys import KEY_HASH_PATTERN
+from server.scoring.config import ScoringConfig
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,17 @@ class OrgConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     orgs: dict[Slug, OrgEntry] = Field(default_factory=dict)
+    # Thresholds for every org. Omitted means the public defaults; operators tune their own here, privately.
+    scoring: ScoringConfig | None = None
+
+    @property
+    def scoring_config(self) -> ScoringConfig:
+        """
+        The effective scoring config.
+
+        :return: the configured one, or the defaults
+        """
+        return self.scoring or ScoringConfig()
 
     def key_index(self) -> dict[str, "ServerIdentity"]:
         """
