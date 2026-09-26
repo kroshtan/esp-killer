@@ -148,6 +148,21 @@ Two things drove the design and are worth knowing when reading flags:
   `ON CONFLICT`), except `latest_names`, which relies on SQLite's documented bare-column-with-MAX behaviour.
 - **License:** Apache-2.0.
 
+### Deployment
+
+- **One image, two roles.** The Dockerfile's default command is the API; compose runs the same image as
+  `python -m server.worker`. The image holds only `server/` and `shared/` (no agent, tools or tests), runs as uid
+  10001, and keeps `espk.db` and `config.yaml` in one `/data` volume. It is a directory mount because the CLI
+  replaces `config.yaml` with a rename in the same directory, which fails on a single-file bind mount.
+- **The worker starts after the API is healthy.** Both processes migrate the database on start, and the migration
+  reads `user_version` before taking the write lock, so two processes creating a fresh file at the same moment
+  could both try to create the tables. `depends_on: condition: service_healthy` avoids that.
+- **API port on 127.0.0.1 only.** Agents need HTTPS, so a TLS proxy is always in front. The optional Caddy
+  override trusts forwarded headers from any peer, which is acceptable only because the API is not reachable
+  from outside except through Caddy, and because auth and rate limits key on the API key, not the client IP.
+- **No access logs** (uvicorn `--no-access-log`, no `log` in the Caddyfile): client IPs are personal data too.
+- **SQLite on a local volume only.** WAL mode needs working file locks and shared memory; NFS/SMB break both.
+
 ## Known limitations
 
 - Rate limiting is in process memory, which is correct only for a single API process.

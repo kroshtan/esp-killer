@@ -1,0 +1,47 @@
+# The backend: ingest API + background worker, one image, one shared data volume.
+#
+#   cp .env.example .env            # optional: SMTP settings for email alerts, retention, log level
+#   docker compose up -d --build
+#   docker compose exec api python -m server add-org my-org --discord-webhook https://discord.com/api/webhooks/...
+#   docker compose exec api python -m server add-server my-org main-1     # prints the API key once
+#
+# The API must be reachable over HTTPS: the agent refuses plain HTTP to anything but localhost. For automatic
+# HTTPS with Caddy, add the override: docker compose -f docker-compose.yaml -f docker-compose.caddy.yaml up -d
+#
+# Both processes open the same SQLite file. WAL mode makes that safe on a local volume; never put /data on NFS or
+# SMB, where SQLite's locking is not reliable.
+
+x-espk: &espk
+  image: ${ESPK_IMAGE:-espk:local}
+  build: .
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - espk-data:/data
+
+services:
+  api:
+    <<: *espk
+    # Published on localhost only: agents need HTTPS, so put a TLS reverse proxy in front (host nginx/Caddy, or
+    # docker-compose.caddy.yaml). To expose it directly to a proxy on another host, drop the 127.0.0.1 prefix.
+    ports:
+      - "127.0.0.1:8000:8000"
+    # The image's HEALTHCHECK polls /healthz, which also checks the database.
+
+  worker:
+    <<: *espk
+    command: ["python", "-m", "server.worker"]
+    # The worker serves no HTTP, so the image's /healthz check does not apply.
+    healthcheck:
+      disable: true
+    # Start after the API has created and migrated the database, so the two never migrate a new file at once.
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  # A named volume (owned by the image's uid 10001). To use a host directory instead, replace it with
+  # ./data:/data in both services and run `sudo chown 10001:10001 ./data` first.
+  espk-data:

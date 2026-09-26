@@ -1,0 +1,5 @@
+# Used by docker-compose.caddy.yaml. Caddy obtains and renews the certificate for $ESPK_DOMAIN automatically.
+{$ESPK_DOMAIN} {
+	# No access log: it would record client IPs.
+	reverse_proxy api:8000
+}
