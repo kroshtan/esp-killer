@@ -110,8 +110,10 @@ jobs:
             echo "::warning::RENDER_DEPLOY_HOOK_URL or ESPK_HEALTH_URL is not set; not waiting for the deploy."
             exit 0
           fi
+          # Actions runs this with bash -e; a failed poll (502 while Render swaps instances) must not end the loop.
           for _ in $(seq 1 60); do
-            revision=$(curl -fsS -m 10 "$HEALTH_URL" | python3 -c "import json,sys; print(json.load(sys.stdin).get('revision'))" 2>/dev/null)
+            revision=$(curl -fsS -m 10 "$HEALTH_URL" 2>/dev/null \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('revision'))" 2>/dev/null) || revision=""
             if [[ "$revision" == "$GITHUB_SHA" ]]; then
               echo "Live: $GITHUB_SHA"
               exit 0
