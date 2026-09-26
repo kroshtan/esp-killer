@@ -1,0 +1,46 @@
+# Optional override: Caddy in front of the API with automatic HTTPS (Let's Encrypt).
+#
+#   echo "ESPK_DOMAIN=espk.example.org" >> .env    # a DNS name pointing at this host; ports 80 and 443 open
+#   docker compose -f docker-compose.yaml -f docker-compose.caddy.yaml up -d --build
+#
+# Caddy reaches the API over the compose network. Port 8000 stays published on 127.0.0.1 only (see
+# docker-compose.yaml), so nothing outside this host can talk to the API without going through Caddy.
+
+services:
+  api:
+    # Trust X-Forwarded-* headers from any peer. That is only acceptable because the API is reachable only through
+    # Caddy and from this host; if you publish port 8000 publicly, drop these two flags or list Caddy's address
+    # instead of '*'.
+    # The app authenticates and rate-limits by API key, not by client IP, so the headers matter little either way.
+    command:
+      - uvicorn
+      - --factory
+      - server.app:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --no-access-log
+      - --no-server-header
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ESPK_DOMAIN: ${ESPK_DOMAIN:?set ESPK_DOMAIN in .env to the API's DNS name}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+
+volumes:
+  caddy-data:
+  caddy-config:
