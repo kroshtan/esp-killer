@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from shared.rcon_protocol import AUTH, AUTH_ACCEPTED, EXEC, TERMINATOR, ReadOnlyCommand
-from tools.rcon_format import format_player_data, format_player_list
+from tools.rcon_format import FORMATS, format_player_data, format_player_list
 from tools.sim import World, demo_world
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ class FakeRconOptions:
     chunk_delay_s: float = 0.0
     # Whether responses end with a NUL byte. Unknown for the real server, so the client must handle both.
     nul_terminate: bool = False
+    # Player data format generation (tools.rcon_format.FORMATS).
+    format: str = "2026"
 
 
 @dataclass
@@ -119,12 +121,16 @@ class FakeRconServer:
         now = datetime.now()  # noqa: DTZ005 - the real server reports naive local time
         if opcode == ReadOnlyCommand.PLAYER_DATA:
             self.advance()
-            return format_player_data(self.world.snapshot(), now)
+            return format_player_data(self.world.snapshot(), now, self.options.format)
         if opcode == ReadOnlyCommand.PLAYER_LIST:
             self.advance()
             return format_player_list(self.world.snapshot(), now)
         if opcode == ReadOnlyCommand.SERVER_DETAILS:
-            return f"[{now:%Y.%m.%d-%H.%M.%S}] ServerDetails\nServerName: Fake Evrima Server, ServerMap: Gateway"
+            # Like the real one: a single line with the first key glued on, including the server password.
+            return (
+                f"[{now:%Y.%m.%d-%H.%M.%S}] ServerDetailsServerName: Fake Evrima Server, ServerPassword: hunter2,"
+                " ServerMap: Gateway, ServerMaxPlayers: 100, ServerCurrentPlayers: 16, bEnableMutations: true"
+            )
         logger.warning("fake RCON received non-read-only opcode 0x%02x", opcode)
         return "Unsupported command"
 
@@ -141,7 +147,7 @@ class FakeRconServer:
 async def _serve(args: argparse.Namespace) -> None:
     server = FakeRconServer(
         world=demo_world(n_honest=args.players, cheater=not args.no_cheater, seed=args.seed),
-        options=FakeRconOptions(password=args.password, speedup=args.speedup),
+        options=FakeRconOptions(password=args.password, speedup=args.speedup, format=args.format),
     )
     port = await server.start(args.host, args.port)
     logger.info("fake Evrima RCON listening on %s:%d", args.host, port)
@@ -161,6 +167,7 @@ def main() -> None:
     parser.add_argument("--no-cheater", action="store_true", help="leave out the scripted beeline cheater")
     parser.add_argument("--speedup", type=float, default=1.0, help="simulated seconds per wall-clock second")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--format", choices=FORMATS, default="2026", help="player data format generation")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     with contextlib.suppress(KeyboardInterrupt):

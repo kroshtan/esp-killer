@@ -56,12 +56,65 @@ class Snapshot(BaseModel):
         return players
 
 
+FieldName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z]{1,40}$")]
+Reason = Annotated[str, StringConstraints(max_length=80)]
+Count = Annotated[int, Field(ge=0)]
+
+
+class ParseHealth(BaseModel):
+    """
+    How the agent's recent RCON responses parsed. Counts, error reasons and field *names* only: no values.
+
+    This is how an operator learns that a game update changed the response format, across every server at once,
+    instead of noticing weeks later that scores went quiet.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    polls: Count = 0
+    lines: Count = 0  # player lines seen
+    players: Count = 0  # parsed, including salvaged
+    salvaged: Count = 0  # did not fit the format; only the id and position could be extracted
+    unparsed: Count = 0  # lost
+    ended: Count = 0  # polls whose response ended with the PlayerDataEnd marker
+    errors: Annotated[dict[Reason, Count], Field(max_length=20)] = Field(default_factory=dict)
+    unknown_keys: Annotated[list[FieldName], Field(max_length=20)] = Field(default_factory=list)
+
+    def __add__(self, other: "ParseHealth") -> "ParseHealth":
+        """Both periods together."""
+        errors = dict(self.errors)
+        for reason, n in other.errors.items():
+            if reason in errors or len(errors) < 20:  # noqa: PLR2004
+                errors[reason] = errors.get(reason, 0) + n
+        return ParseHealth(
+            polls=self.polls + other.polls,
+            lines=self.lines + other.lines,
+            players=self.players + other.players,
+            salvaged=self.salvaged + other.salvaged,
+            unparsed=self.unparsed + other.unparsed,
+            ended=self.ended + other.ended,
+            errors=errors,
+            unknown_keys=sorted(set(self.unknown_keys) | set(other.unknown_keys))[:20],
+        )
+
+    @property
+    def problems(self) -> int:
+        """
+        Lines that did not parse cleanly.
+
+        :return: salvaged plus unparsed lines
+        """
+        return self.salvaged + self.unparsed
+
+
 class IngestBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = SCHEMA_VERSION
     agent_version: Annotated[str, StringConstraints(max_length=32)]
     snapshots: Annotated[list[Snapshot], Field(min_length=1, max_length=MAX_SNAPSHOTS_PER_BATCH)]
+    # Optional so agents from before it existed keep working.
+    parse_health: ParseHealth | None = None
 
 
 class IngestResponse(BaseModel):

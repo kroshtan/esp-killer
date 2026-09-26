@@ -8,6 +8,7 @@ player names, ids and positions, i.e. personal data: it is written to a local fi
 import asyncio
 import contextlib
 import logging
+import re
 import signal
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ import typer
 
 from agent import __version__
 from agent.config import AgentSettings, load_settings
+from agent.health import HealthTally
 from agent.poller import Poller
 from agent.queue import SnapshotQueue
 from agent.rcon import EvrimaRconClient, RconError
@@ -27,6 +29,8 @@ from shared.rcon_protocol import ReadOnlyCommand
 
 app = typer.Typer(help="ESP detector agent: polls Evrima RCON (read-only) and uploads player positions.")
 logger = logging.getLogger("agent")
+
+_SERVER_PASSWORD = re.compile(r"(ServerPassword\s*:\s*)[^,\n]*", re.IGNORECASE)
 
 ConfigOption = Annotated[Path | None, typer.Option("--config", "-c", help="agent TOML config file")]
 
@@ -62,6 +66,7 @@ def make_client(settings: AgentSettings) -> EvrimaRconClient:
         connect_timeout_s=rcon.connect_timeout_s,
         response_timeout_s=rcon.response_timeout_s,
         idle_timeout_s=rcon.idle_timeout_s,
+        marker_idle_timeout_s=rcon.marker_idle_timeout_s,
         max_response_bytes=rcon.max_response_bytes,
     )
 
@@ -80,7 +85,8 @@ async def run_agent(settings: AgentSettings, stop: asyncio.Event, http: httpx.As
         http = httpx.AsyncClient(
             timeout=settings.backend.timeout_s, headers={"User-Agent": f"espk-agent/{__version__}"}
         )
-    poller = Poller(make_client(settings), queue, settings.poll_interval_s)
+    health = HealthTally()
+    poller = Poller(make_client(settings), queue, settings.poll_interval_s, health=health)
     uploader = Uploader(
         queue,
         http,
@@ -88,6 +94,7 @@ async def run_agent(settings: AgentSettings, stop: asyncio.Event, http: httpx.As
         settings.backend.api_key.get_secret_value(),
         max_batch=settings.max_snapshots_per_batch,
         interval_s=settings.upload_interval_s,
+        health=health,
     )
     try:
         await asyncio.gather(poller.run(stop), uploader.run(stop))
@@ -177,7 +184,9 @@ def capture(
         async with make_client(settings) as client:
             for command in (ReadOnlyCommand.SERVER_DETAILS, ReadOnlyCommand.PLAYER_LIST):
                 path = out / f"{stamp}-{command.name.lower()}.txt"
-                path.write_text(await client.request(command), encoding="utf-8")
+                # Server details include the plaintext join password; it has no place in a capture.
+                text = _SERVER_PASSWORD.sub(r"\1<redacted>", await client.request(command))
+                path.write_text(text, encoding="utf-8")
             for i in range(count):
                 if i:
                     await asyncio.sleep(interval)

@@ -55,7 +55,8 @@ async def test_slow_fragments_leave_stale_bytes_that_are_drained(
     fake_rcon: FakeRconServer, caplog: pytest.LogCaptureFixture
 ) -> None:
     """If the idle timeout is too short, the tail of a response must not be mistaken for the next response."""
-    async with client_for(fake_rcon, idle_timeout_s=0.05) as client:
+    fake_rcon.options.format = "2025"  # no end marker, so reading relies on the idle timeouts
+    async with client_for(fake_rcon, idle_timeout_s=0.05, marker_idle_timeout_s=0.05) as client:
         fake_rcon.options.chunk_size = 200
         fake_rcon.options.chunk_delay_s = 0.15
         first = await client.request(ReadOnlyCommand.PLAYER_DATA)
@@ -102,3 +103,23 @@ async def test_no_response_times_out() -> None:
             await client.connect()
     finally:
         server.close()
+
+
+async def test_end_marker_completes_slow_responses(fake_rcon: FakeRconServer) -> None:
+    """With PlayerDataEnd, a response trickling in slower than the idle timeout still arrives whole."""
+    fake_rcon.options.chunk_size = 200
+    fake_rcon.options.chunk_delay_s = 0.15
+    async with client_for(fake_rcon, idle_timeout_s=0.05) as client:
+        result = parse_player_data(await client.request(ReadOnlyCommand.PLAYER_DATA))
+    assert result.ended
+    assert len(result.players) == 6
+
+
+@pytest.mark.parametrize("style", ["2025", "2026"])
+async def test_both_format_generations(fake_rcon: FakeRconServer, style: str) -> None:
+    fake_rcon.options.format = style
+    async with client_for(fake_rcon) as client:
+        result = parse_player_data(await client.request(ReadOnlyCommand.PLAYER_DATA))
+    assert result.errors == []
+    assert len(result.players) == 6
+    assert result.ended == (style == "2026")

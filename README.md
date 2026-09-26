@@ -10,7 +10,7 @@ sight, arriving implausibly fast, waiting on paths others later cross), and aler
 Discord or by email. Scores are evidence for human review only. Nothing here kicks or bans anyone.
 
 > **Status:** the agent, ingest API, scoring and alerts are done. The RCON response format is inferred from
-> other clients and still has to be verified on a live server (see [NOTES.md](NOTES.md#verify-on-a-real-server)).
+> other clients and still has to be verified on a live server (see [NOTES.md](NOTES.md#rcon-format-evidence)).
 
 ```
 game server host                          backend (Docker: api + worker, SQLite)

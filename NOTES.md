@@ -3,29 +3,43 @@
 Decisions, assumptions that still need checking against a real server, and known limitations. Newest context
 at the top of each section.
 
-## Verify on a real server
+## RCON format evidence
 
-Run `python -m agent capture -c agent.toml` on a machine with a live Evrima server. It writes raw responses to
-`captures/`. Those files contain player names, ids and positions: check them, then delete them. Never commit
-them unless names and ids have been replaced.
+Nobody has published a complete raw player-data response from a live server. The format is pieced together from
+the parsers, regexes, test fixtures and logs of about a dozen independent Evrima tools (researched September 2026).
+Evidence types: **(a)** real output (logs, hex captures), **(b)** parser code or fixtures that imply the format,
+**(c)** documentation.
 
-| # | Assumption | Where it matters | Source |
+| Question | Answer | Confidence | Evidence |
 |---|---|---|---|
-| 1 | Auth is `0x01 + password + 0x00`, the reply contains `Password Accepted` | `shared/rcon_protocol.py` | all three reference clients |
-| 2 | Commands are `0x02 + opcode + params + 0x00`. The Go client omits the trailing NUL and we send it | `shared/rcon_protocol.py` | TS and Python clients |
-| 3 | Player data is opcode `0x77`, player list `0x40`, server details `0x12` | `ReadOnlyCommand` | all three |
-| 4 | Responses have no length prefix. We don't know whether they end with a NUL, or how big responses fragment | `agent/rcon.py` read-until-idle | none document it; references do a single `read()` |
-| 5 | The player data format is `[YYYY.MM.DD-HH.MM.SS] PlayerData` then one `Name: …, PlayerID: …, Location: X=… Y=… Z=…, Class: BP_…_C, Growth: …, Health: …, …` line per player | `shared/playerdata.py` | butt4cak3/theislercon parser only |
-| 6 | Names may contain commas, so we take the *last* `, PlayerID:` | parser | inferred from the Go parser |
-| 7 | Player ids are Steam64 digits or EOS hex. We accept any `[A-Za-z0-9_-]{1,64}` | `shared/models.py` | the Go client takes digits only |
-| 8 | Growth is a 0–1 fraction (the Go comment says 0.75 = adult in the current version) | parser | Go client |
-| 9 | Coordinates are Unreal units (cm) and the map is roughly ±400 000 uu | scoring distances (phase 2) | Unreal convention, unverified |
-| 10 | Player data excludes players still in class selection | rejoin detection (phase 3) | Go client doc comment |
-| 11 | The header timestamp is naive server-local time. We ignore it and stamp snapshots with the agent's UTC clock | `agent/poller.py` | Go client |
+| Wire format | Auth `0x01 + password + 0x00` answered by `Password Accepted`; commands `0x02 + opcode + 0x00`; player data `0x77`, player list `0x40`, server details `0x12` | high | the developers' protocol document (v0.17.54, Oct 2024) and every client |
+| Framing | No length prefix. Player data arrives in several TCP segments (1.4–5.8 KB for a few players in one production log) and ends with a `PlayerDataEnd` line on current builds. No source has seen a NUL terminator | high / medium | (a) production bot log; (b) several clients read until `PlayerDataEnd` |
+| Player data lines | One line per *spawned* player, fields `Key: value` joined by `, `. The name runs to `, PlayerID:` (names may contain commas) | high | (b) many parsers and regexes |
+| Header | `[YYYY.MM.DD-HH.MM.SS] PlayerData`. The timestamp is sometimes missing. 2025 builds glue the first player onto it (`PlayerDataName: ...`); 2026 builds put it on its own line | high that both occur | (b) 2025 regexes vs 2026 parsers |
+| Fields | `PlayerID`, `Location: X= Y= Z=` (3 decimals), `Class`, `Growth`, `Health`, `Stamina`, `Hunger`, `Thirst`. 2026 builds add `Gender` (after PlayerID), `MutationSlots: [1=None,...]` (commas inside brackets), `ParentMutationSlots`, `ElderMutationSlotsA/B`, `PrimeElder` | high | (b) |
+| Class | `BP_Carnotaurus_C` in 2025, bare `Tyrannosaurus` in 2026 | high | (a) 2026 log; (b) 2025 regexes |
+| Player ids | Steam64 (17 digits) since ~0.16; EOS ids before that | high | (c) protocol changelog; (b) `\d{17}` regexes |
+| Growth | 0–1 fraction; adult is 1.0 now (0.75 in older builds) | medium | (b) |
+| Coordinates | Unreal units (cm). Gateway spans roughly ±600 000 uu. RCON's X/Y are the in-game map's Long/Lat, i.e. swapped relative to the in-game Lat/Long display | medium-high | (a) one tool checked against a live position; (b) map tools |
+| Server details | One line, first key glued on: `[ts] ServerDetailsServerName: ..., ServerPassword: <plaintext>, ServerMap: ...` | high | (b) four clients, one strict regex |
+| Player list | `PlayerList`, then a line of ids and a line of names, each item followed by a comma; empty server: `PlayerList\n\n` | high | (a) hex capture |
 
-If the format differs, update `shared/playerdata.py`, `tools/rcon_format.py` and `tests/fixtures/rcon/` together.
-The parser logs unparseable lines as reasons plus field *keys* (never values), which is usually enough to see
-what changed.
+What the code does about it:
+
+- The parser (`shared/playerdata.py`) accepts both generations, stops at `PlayerDataEnd`, ignores and reports
+  unknown fields, and salvages lines it cannot parse if they still hold one id-shaped token and an X/Y/Z triple.
+  `tests/fixtures/rcon/` has 2025 and 2026 fixtures written to the evidence (fake names and ids), and the fake
+  RCON server speaks both (`--format`).
+- The RCON client reads player data until `PlayerDataEnd`. While the marker is still missing it waits up to
+  `marker_idle_timeout_s` (1 s) for more, because 2025-era servers and possibly empty servers never send it.
+- Agents report **parse health** with every upload: counts, error reasons and unknown field *names*, never
+  values. The API logs a warning when a server first reports problems, and `python -m server servers` shows each
+  server's agent version, last upload and parse health. A format change after a game update shows up there first.
+- `capture` redacts `ServerPassword` from the server details it saves.
+
+To settle what remains, run `espk-agent capture -c agent.toml` against a live server (a local dedicated server
+via SteamCMD works). It writes raw responses to `captures/`. Those contain player names, ids and positions:
+check them, add anonymised copies to `tests/fixtures/rcon/`, then delete them.
 
 ## Scoring (phase 2)
 

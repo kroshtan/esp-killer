@@ -29,7 +29,7 @@ from server.keys import hash_key, looks_like_key
 from server.orgconfig import ConfigStore, ServerIdentity
 from server.ratelimit import TokenBucketLimiter
 from server.settings import ServerSettings
-from shared.models import IngestBatch, IngestResponse
+from shared.models import IngestBatch, IngestResponse, ParseHealth
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +126,15 @@ async def ingest(
         )
 
     result = await run_in_threadpool(state.repo.ingest, identity.org_id, identity.server_id, valid, received_at)
+    before = await run_in_threadpool(
+        state.repo.record_agent_status,
+        identity.org_id,
+        identity.server_id,
+        batch.agent_version,
+        batch.parse_health,
+        received_at,
+    )
+    _warn_on_new_parse_problems(identity, before.total_health, batch.parse_health)
     logger.info(
         "%s/%s: %d snapshot(s) stored (%d rows), %d duplicate",
         identity.org_id,
@@ -140,6 +149,25 @@ async def ingest(
         rejected_snapshots=rejected,
         rows=result.rows,
         received_at=received_at,
+    )
+
+
+def _warn_on_new_parse_problems(
+    identity: ServerIdentity, before: ParseHealth | None, health: ParseHealth | None
+) -> None:
+    """Log once when a server's agent starts reporting lines it cannot parse (a game update changed RCON?)."""
+    if health is None or health.problems == 0 or (before is not None and before.problems > 0):
+        return
+    logger.warning(
+        "%s/%s: the agent could not parse %d of %d player line(s) (%d salvaged); reasons %s, unknown fields %s."
+        " The RCON format may have changed; see `python -m server servers`.",
+        identity.org_id,
+        identity.server_id,
+        health.problems,
+        health.lines + health.salvaged,
+        health.salvaged,
+        health.errors,
+        health.unknown_keys,
     )
 
 

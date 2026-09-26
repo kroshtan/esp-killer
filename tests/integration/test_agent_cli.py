@@ -74,6 +74,9 @@ def test_capture_writes_raw_responses_locally(tmp_path: Path, rcon_port: int) ->
     names = sorted(p.name.split("-", 1)[1] for p in out.iterdir())
     assert names == ["player_data-0.txt", "player_data-1.txt", "player_list.txt", "server_details.txt"]
     assert "PlayerData" in next(out.glob("*player_data-0.txt")).read_text()
+    details = next(out.glob("*server_details.txt")).read_text()
+    assert "ServerPassword: <redacted>" in details
+    assert "hunter2" not in details
 
 
 def test_version_flag_prints_version() -> None:

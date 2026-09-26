@@ -6,7 +6,9 @@ single ``read()`` and treat whatever arrived as the whole response, which trunca
 the rest on the socket to be mistaken for the next response. This client instead:
 
 1. waits up to ``response_timeout_s`` for the first bytes;
-2. keeps reading until the socket is quiet for ``idle_timeout_s``, a NUL terminator arrives, or
+2. keeps reading until the response's end marker arrives (``PlayerDataEnd`` for player data, on current
+   servers), a NUL terminator arrives, the socket is quiet for ``idle_timeout_s`` (``marker_idle_timeout_s``
+   while an expected marker has not arrived yet: older servers and empty servers may not send it), or
    ``max_response_bytes`` is exceeded;
 3. before each command, drains anything left over from a previous response and warns about it (that means
    ``idle_timeout_s`` is too short for this server).
@@ -22,6 +24,7 @@ from typing import Self
 
 from shared.rcon_protocol import (
     AUTH_ACCEPTED,
+    END_MARKERS,
     TERMINATOR,
     ReadOnlyCommand,
     decode_response,
@@ -53,6 +56,7 @@ class EvrimaRconClient:
         connect_timeout_s: float = 5.0,
         response_timeout_s: float = 5.0,
         idle_timeout_s: float = 0.25,
+        marker_idle_timeout_s: float = 1.0,
         max_response_bytes: int = 1024 * 1024,
     ) -> None:
         self.host = host
@@ -61,6 +65,7 @@ class EvrimaRconClient:
         self.connect_timeout_s = connect_timeout_s
         self.response_timeout_s = response_timeout_s
         self.idle_timeout_s = idle_timeout_s
+        self.marker_idle_timeout_s = max(marker_idle_timeout_s, idle_timeout_s)
         self.max_response_bytes = max_response_bytes
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -107,7 +112,7 @@ class EvrimaRconClient:
             if not self.connected:
                 raise RconError("not connected")
             await self._drain_stale()
-            return await self._exchange(encode_command(command))
+            return await self._exchange(encode_command(command), END_MARKERS.get(command))
 
     async def close(self) -> None:
         """Close the connection, if open."""
@@ -125,12 +130,12 @@ class EvrimaRconClient:
         """Close the connection."""
         await self.close()
 
-    async def _exchange(self, packet: bytes) -> str:
+    async def _exchange(self, packet: bytes, end_marker: bytes | None = None) -> str:
         assert self._reader is not None and self._writer is not None  # noqa: S101 - guarded by callers
         try:
             self._writer.write(packet)
             await self._writer.drain()
-            raw = await self._read_response(self._reader)
+            raw = await self._read_response(self._reader, end_marker)
         except RconError:
             await self._close()
             raise
@@ -139,7 +144,7 @@ class EvrimaRconClient:
             raise RconError(f"RCON exchange failed: {e!r}") from e
         return decode_response(raw)
 
-    async def _read_response(self, reader: asyncio.StreamReader) -> bytes:
+    async def _read_response(self, reader: asyncio.StreamReader, end_marker: bytes | None = None) -> bytes:
         try:
             first = await asyncio.wait_for(reader.read(_READ_CHUNK), timeout=self.response_timeout_s)
         except TimeoutError as e:
@@ -147,11 +152,12 @@ class EvrimaRconClient:
         if not first:
             raise RconError("connection closed by server")
         buf = bytearray(first)
-        while not buf.endswith(TERMINATOR):
+        while not buf.endswith(TERMINATOR) and not (end_marker and end_marker in buf):
             if len(buf) > self.max_response_bytes:
                 raise RconError(f"response exceeds {self.max_response_bytes} bytes")
+            idle = self.marker_idle_timeout_s if end_marker else self.idle_timeout_s
             try:
-                chunk = await asyncio.wait_for(reader.read(_READ_CHUNK), timeout=self.idle_timeout_s)
+                chunk = await asyncio.wait_for(reader.read(_READ_CHUNK), timeout=idle)
             except TimeoutError:
                 break
             if not chunk:

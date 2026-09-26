@@ -1,10 +1,14 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from server.cli import app
+from server.db.database import Database
+from server.db.repository import Repository
 from server.keys import hash_key, looks_like_key
 from server.orgconfig import load_config
+from shared.models import ParseHealth
 
 runner = CliRunner()
 
@@ -52,3 +56,22 @@ def test_errors(tmp_path: Path) -> None:
     assert cli(config, "add-org", "acme", "--email", "not-an-email")[0] == 1
     assert cli(config, "add-server", "nope", "s1")[0] == 1
     assert cli(config, "revoke-key", "nope", "s1")[0] == 1
+
+
+def test_servers_lists_key_status_and_uploads(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    db = tmp_path / "espk.db"
+    cli(config, "add-org", "acme")
+    cli(config, "add-server", "acme", "s1")
+    cli(config, "add-server", "acme", "s2")
+    health = ParseHealth(
+        polls=4, lines=8, players=7, unparsed=1, errors={"no Location field": 1}, unknown_keys=["Diet"]
+    )
+    Repository(Database(db)).record_agent_status("acme", "s1", "0.1.1", health, datetime.now(UTC))
+
+    result = runner.invoke(app, ["servers", "--config", str(config), "--database", str(db)])
+    assert result.exit_code == 0
+    assert "acme/s1  key active  agent 0.1.1" in result.stdout
+    assert "1.8 players/poll" in result.stdout
+    assert "unknown fields: Diet" in result.stdout
+    assert "acme/s2  key active  never uploaded" in result.stdout

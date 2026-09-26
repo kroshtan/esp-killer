@@ -5,12 +5,23 @@ The dedupe check and the inserts run in one ``BEGIN IMMEDIATE`` transaction, so 
 same snapshot cannot both store it.
 """
 
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from server.db.database import Database, ts
-from shared.models import Snapshot
+from server.db.database import Database, parse_ts, ts
+from shared.models import ParseHealth, Snapshot
+
+
+@dataclass(frozen=True)
+class AgentStatus:
+    org_id: str
+    server_id: str
+    agent_version: str
+    last_seen: datetime
+    latest_health: ParseHealth | None
+    total_health: ParseHealth | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +94,69 @@ class Repository:
                 return int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
             return int(conn.execute("SELECT COUNT(*) FROM positions WHERE org_id = ?", (org_id,)).fetchone()[0])
 
+    def record_agent_status(
+        self, org_id: str, server_id: str, agent_version: str, health: ParseHealth | None, now: datetime
+    ) -> AgentStatus:
+        """
+        Record an upload's agent version and parse health, adding the health to the server's running total.
+
+        :param org_id: the org
+        :param server_id: the server
+        :param agent_version: version the agent reported
+        :param health: the batch's parse health, if the agent sent one
+        :param now: current time
+        :return: the status before this update (for noticing changes), or a blank one for a new server
+        """
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_status WHERE org_id = ? AND server_id = ?", (org_id, server_id)
+            ).fetchone()
+            before = _agent_status(row) if row is not None else AgentStatus(org_id, server_id, "", now, None, None)
+            latest, total = before.latest_health, before.total_health
+            if health is not None:
+                latest = health
+                total = health if total is None else total + health
+            conn.execute(
+                "INSERT INTO agent_status (org_id, server_id, agent_version, last_seen, latest_health, total_health)"
+                " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (org_id, server_id) DO UPDATE SET"
+                " agent_version = excluded.agent_version, last_seen = excluded.last_seen,"
+                " latest_health = excluded.latest_health, total_health = excluded.total_health",
+                (
+                    org_id,
+                    server_id,
+                    agent_version,
+                    ts(now),
+                    latest.model_dump_json() if latest else None,
+                    total.model_dump_json() if total else None,
+                ),
+            )
+        return before
+
+    def agent_statuses(self) -> list[AgentStatus]:
+        """
+        Every server's latest agent status.
+
+        :return: statuses ordered by org and server
+        """
+        with self.db.connect() as conn:
+            rows = conn.execute("SELECT * FROM agent_status ORDER BY org_id, server_id").fetchall()
+        return [_agent_status(row) for row in rows]
+
     def ping(self) -> None:
         """Check the database answers."""
         self.db.ping()
+
+
+def _agent_status(row: sqlite3.Row) -> AgentStatus:
+    return AgentStatus(
+        org_id=row["org_id"],
+        server_id=row["server_id"],
+        agent_version=row["agent_version"],
+        last_seen=parse_ts(row["last_seen"]),
+        latest_health=_health(row["latest_health"]),
+        total_health=_health(row["total_health"]),
+    )
+
+
+def _health(value: str | None) -> ParseHealth | None:
+    return ParseHealth.model_validate_json(value) if value else None

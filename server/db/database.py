@@ -146,6 +146,18 @@ MIGRATIONS: list[str] = [
     -- When a flagged player was last seen; a sighting after a long enough gap is a rejoin.
     ALTER TABLE flags ADD COLUMN last_seen_at TEXT;
     """,
+    # 3: what each server's agent reports about itself, to spot outdated agents and RCON format changes.
+    """
+    CREATE TABLE agent_status (
+        org_id        TEXT NOT NULL,
+        server_id     TEXT NOT NULL,
+        agent_version TEXT NOT NULL,
+        last_seen     TEXT NOT NULL,
+        latest_health TEXT,  -- JSON ParseHealth of the latest upload that carried one
+        total_health  TEXT,  -- JSON ParseHealth summed since the first
+        PRIMARY KEY (org_id, server_id)
+    );
+    """,
 ]
 
 

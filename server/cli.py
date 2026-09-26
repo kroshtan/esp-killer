@@ -13,6 +13,7 @@ import typer
 from pydantic import TypeAdapter, ValidationError
 
 from server.db.database import Database
+from server.db.repository import Repository
 from server.db.scoring import FLAG_STATUSES, OPEN, ScoringRepository
 from server.keys import generate_key, hash_key
 from server.orgconfig import AlertDestinations, OrgEntry, ServerEntry, Slug, load_config, save_config
@@ -117,6 +118,47 @@ def revoke_key(
     org.servers[server_id] = ServerEntry(key_hash=None)
     save_config(path, cfg)
     typer.echo(f"revoked key for {org_id}/{server_id}")
+
+
+@app.command("servers")
+def servers(
+    config: ConfigOption = None,
+    database: DatabaseOption = None,
+) -> None:
+    """Show every server: key status, agent version, last upload, and how its RCON responses parse."""
+    cfg = load_config(_config_path(config))
+    statuses = {
+        (s.org_id, s.server_id): s
+        for s in Repository(Database(database or ServerSettings().database_path)).agent_statuses()
+    }
+    if not cfg.orgs:
+        typer.echo("no orgs")
+        return
+    for org_id, org in cfg.orgs.items():
+        for server_id, entry in org.servers.items():
+            key = "active" if entry.key_hash else "revoked"
+            status = statuses.get((org_id, server_id))
+            if status is None:
+                typer.echo(f"{org_id}/{server_id}  key {key}  never uploaded")
+                continue
+            typer.echo(
+                f"{org_id}/{server_id}  key {key}  agent {status.agent_version}  "
+                f"last upload {status.last_seen:%Y-%m-%d %H:%M}Z"
+            )
+            for label, health in (("latest", status.latest_health), ("total", status.total_health)):
+                if health is None:
+                    continue
+                per_poll = health.players / health.polls if health.polls else 0.0
+                bad = health.problems / max(1, health.lines + health.salvaged) * 100
+                line = (
+                    f"    {label:6s} {health.polls} poll(s), {per_poll:.1f} players/poll, {bad:.1f}% lines not clean"
+                    f" ({health.salvaged} salvaged, {health.unparsed} lost), end marker in {health.ended}"
+                )
+                typer.echo(line)
+                if health.errors:
+                    typer.echo(f"           reasons: {health.errors}")
+                if health.unknown_keys:
+                    typer.echo(f"           unknown fields: {', '.join(health.unknown_keys)}")
 
 
 @app.command("list-flags")

@@ -1,0 +1,2 @@
+[2025.05.14-20.11.03] PlayerDataName: First Player, PlayerID: 76561198000000031, Location: X=-120451.311 Y=254810.090 Z=11873.402, Class: BP_Carnotaurus_C, Growth: 0.75, Health: 1.00, Stamina: 0.93, Hunger: 0.81, Thirst: 0.77
+Name: Second, Player, PlayerID: 76561198000000032, Location: X=310022.500 Y=-88710.125 Z=9021.004, Class: BP_Hypsilophodon_C, Growth: 0.42, Health: 0.66, Stamina: 1.00, Hunger: 0.50, Thirst: 0.95

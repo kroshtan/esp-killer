@@ -195,9 +195,11 @@ def smoke(binary: Path, work: Path, seconds: float) -> None:
             )
             time.sleep(seconds)
             # SIGINT exercises the graceful shutdown path (final upload). Windows has no SIGINT for a child
-            # without a shared console, so there it is simply terminated; uploads every 1s already happened.
+            # without a shared console, so there it is killed instead; uploads every 1s already happened. A
+            # PyInstaller one-file exe is a launcher plus a child process, and terminate() would only stop the
+            # launcher, leaving the child running (and holding agent.log open): kill the whole tree.
             if os.name == "nt":
-                proc.terminate()
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], check=False, capture_output=True)
             else:
                 proc.send_signal(signal.SIGINT)
             code = proc.wait(timeout=30)
@@ -230,7 +232,8 @@ def main() -> None:
     if not args.binary.is_file():
         sys.exit(f"binary not found: {args.binary}")
 
-    with tempfile.TemporaryDirectory(prefix="espk-smoke-", delete=not args.keep) as tmp:
+    # ignore_cleanup_errors: on Windows a file still held by a dying process must not fail a passing test.
+    with tempfile.TemporaryDirectory(prefix="espk-smoke-", delete=not args.keep, ignore_cleanup_errors=True) as tmp:
         try:
             smoke(args.binary, Path(tmp), args.seconds)
         except (RuntimeError, subprocess.TimeoutExpired) as e:

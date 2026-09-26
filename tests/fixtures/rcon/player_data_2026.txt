@@ -1,0 +1,4 @@
+[2026.04.02-18.40.12] PlayerData
+Name: Alpha Rex, PlayerID: 76561198000000041, Gender: Male, Location: X=483129.590 Y=-76220.472 Z=23256.202, Class: Tyrannosaurus, Growth: 1.00, Health: 0.88, Stamina: 1.00, Hunger: 0.71, Thirst: 0.64, MutationSlots: [1=None,2=None,3=None,4=None], ParentMutationSlots: [1=None,2=None,3=None,4=None], ElderMutationSlotsA: [1=None,2=None], ElderMutationSlotsB: [1=None,2=None], PrimeElder: false
+Name: Beta, Dryo, PlayerID: 76561198000000042, Gender: Female, Location: X=-2204.5 Y=15550.25 Z=-310.0, Class: Dryosaurus, Growth: 0.31, Health: 1.00, Stamina: 0.40, Hunger: 0.90, Thirst: 0.85, MutationSlots: [1=Featherweight,2=None,3=None,4=None], ParentMutationSlots: [1=None,2=None,3=None,4=None], ElderMutationSlotsA: [1=None,2=None], ElderMutationSlotsB: [1=None,2=None], PrimeElder: true
+PlayerDataEnd

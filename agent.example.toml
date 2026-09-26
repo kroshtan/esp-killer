@@ -14,6 +14,8 @@ port = 8888
 password = "change-me"
 # The protocol has no length prefix: a response is complete once the socket is quiet this long.
 idle_timeout_s = 0.25
+# While the PlayerDataEnd marker current servers send has not arrived yet, wait this long instead.
+marker_idle_timeout_s = 1.0
 
 [backend]
 url = "https://espk.example.org"

@@ -1,4 +1,5 @@
 import gzip
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -154,3 +155,23 @@ async def test_rate_limit(api: httpx.AsyncClient, tenant: Tenant) -> None:
     limited = [r for r in responses[20:] if r.status_code == 429]
     assert limited
     assert int(limited[0].headers["Retry-After"]) >= 1
+
+
+async def test_parse_health_is_recorded_and_new_problems_are_logged(
+    api: httpx.AsyncClient, tenant: Tenant, repo: Repository, caplog: pytest.LogCaptureFixture
+) -> None:
+    clean = {"polls": 5, "lines": 10, "players": 10}
+    broken = {"polls": 5, "lines": 10, "players": 8, "unparsed": 2, "errors": {"no Location field": 2}}
+    for health in (clean, broken, broken):
+        body = batch_body(snapshot(), compress=False)
+        payload = json.loads(body)
+        payload["parse_health"] = health
+        response = await api.post("/v1/ingest", json=payload, headers=auth(tenant.key, gzip_body=False))
+        assert response.status_code == 200
+    (status,) = repo.agent_statuses()
+    assert status.agent_version == "test"
+    assert status.latest_health is not None and status.latest_health.unparsed == 2
+    assert status.total_health is not None and status.total_health.polls == 15
+    assert status.total_health.errors == {"no Location field": 4}
+    # Logged once, when the problems first appeared.
+    assert caplog.text.count("could not parse") == 1

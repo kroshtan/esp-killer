@@ -6,8 +6,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agent.health import HealthTally
 from agent.queue import SnapshotQueue
 from agent.uploader import Outcome, Uploader
+from shared.playerdata import parse_player_data
 from tests.helpers import snapshot
 
 URL = "https://espk.test/v1/ingest"
@@ -77,3 +79,22 @@ async def test_payload_too_large_halves_the_batch(tmp_path: Path) -> None:
     assert outcomes == [Outcome.RETRY, Outcome.RETRY, Outcome.SENT]
     assert sizes == [4, 2, 1]
     assert len(queue) == 4
+
+
+async def test_parse_health_travels_with_the_batch_and_survives_failures(tmp_path: Path) -> None:
+    bodies: list[dict[str, object]] = []
+    status = {"code": 503}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(gzip.decompress(request.content)))
+        return httpx.Response(status["code"])
+
+    uploader, _ = make(tmp_path, handler)
+    uploader.health = HealthTally()
+    uploader.health.record(parse_player_data("Name: A, PlayerID: 1, Location: X=0 Y=0 Z=0"))
+    assert await uploader.upload_once() is Outcome.RETRY
+    status["code"] = 200
+    assert await uploader.upload_once() is Outcome.SENT
+    assert bodies[0]["parse_health"]["polls"] == 1  # type: ignore[index]
+    assert bodies[1]["parse_health"]["polls"] == 1  # type: ignore[index]  # given back after the failure
+    assert uploader.health.take() is None

@@ -24,8 +24,9 @@ import httpx
 
 from agent import __version__
 from agent.backoff import Backoff
+from agent.health import HealthTally
 from agent.queue import SnapshotQueue
-from shared.models import IngestBatch
+from shared.models import IngestBatch, ParseHealth
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class Uploader:
         *,
         max_batch: int = 200,
         interval_s: float = 15.0,
+        health: HealthTally | None = None,
     ) -> None:
         self.queue = queue
         self.http = http
@@ -58,6 +60,7 @@ class Uploader:
         self.max_batch = max_batch
         self.batch_size = max_batch
         self.interval_s = interval_s
+        self.health = health
         self.retry_after_s: float = 0.0
         self._backoff = Backoff(base_s=2.0, cap_s=300.0)
 
@@ -73,7 +76,10 @@ class Uploader:
         if not items:
             return Outcome.EMPTY
         ids = [queue_id for queue_id, _ in items]
-        batch = IngestBatch(agent_version=__version__, snapshots=[snapshot for _, snapshot in items])
+        health = self.health.take() if self.health is not None else None
+        batch = IngestBatch(
+            agent_version=__version__, snapshots=[snapshot for _, snapshot in items], parse_health=health
+        )
         body = gzip.compress(batch.model_dump_json().encode("utf-8"))
         try:
             response = await self.http.post(
@@ -86,8 +92,16 @@ class Uploader:
                 },
             )
         except httpx.HTTPError as e:
+            self._give_back(health)
             return self._retry(f"backend unreachable: {e!r}")
-        return self._handle(response, ids)
+        outcome = self._handle(response, ids)
+        if outcome is Outcome.RETRY:
+            self._give_back(health)
+        return outcome
+
+    def _give_back(self, health: ParseHealth | None) -> None:
+        if self.health is not None:
+            self.health.give_back(health)
 
     def _handle(self, response: httpx.Response, ids: list[int]) -> Outcome:
         status = response.status_code

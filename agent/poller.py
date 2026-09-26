@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pydantic import ValidationError
 
 from agent.backoff import Backoff
+from agent.health import HealthTally
 from agent.queue import SnapshotQueue
 from agent.rcon import EvrimaRconClient, RconAuthError, RconError
 from shared.models import PlayerSample, Snapshot
@@ -65,11 +66,13 @@ class Poller:
         queue: SnapshotQueue,
         interval_s: float,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        health: HealthTally | None = None,
     ) -> None:
         self.client = client
         self.queue = queue
         self.interval_s = interval_s
         self.clock = clock
+        self.health = health or HealthTally()
         self.polls = 0
         self._backoff = Backoff(base_s=1.0, cap_s=60.0)
 
@@ -87,6 +90,7 @@ class Poller:
         text = await self.client.request(ReadOnlyCommand.PLAYER_DATA)
         captured_at = self.clock()
         result = parse_player_data(text)
+        self.health.record(result)
         snapshot, invalid = build_snapshot(result, captured_at)
         if result.errors or invalid:
             # Only reasons and field keys, never names, ids or positions.

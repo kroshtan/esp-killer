@@ -27,6 +27,8 @@ class RconSettings(BaseModel):
     response_timeout_s: float = Field(default=5.0, gt=0)
     # A response is complete once the socket has been quiet this long (the protocol has no length prefix).
     idle_timeout_s: float = Field(default=0.25, gt=0)
+    # ...or, while an end marker the server may send (PlayerDataEnd) has not arrived yet, this long.
+    marker_idle_timeout_s: float = Field(default=1.0, gt=0)
     max_response_bytes: int = Field(default=1024 * 1024, ge=1024)
 
 

@@ -29,6 +29,10 @@ class ReadOnlyCommand(IntEnum):
     PLAYER_DATA = 0x77
 
 
+# Lines that end a response, where the server sends one (current builds end player data with it).
+END_MARKERS: dict[ReadOnlyCommand, bytes] = {ReadOnlyCommand.PLAYER_DATA: b"PlayerDataEnd"}
+
+
 def encode_auth(password: str) -> bytes:
     """
     Encode the login packet.

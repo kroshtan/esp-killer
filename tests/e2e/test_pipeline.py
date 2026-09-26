@@ -89,6 +89,12 @@ async def test_positions_flow_from_game_server_to_database(
     assert row["growth"] is not None
     # The agent only ever asked for player data.
     assert set(fake_rcon.received_opcodes) == {ReadOnlyCommand.PLAYER_DATA}
+    # ...and reported that it parsed cleanly.
+    (status,) = repo.agent_statuses()
+    assert status.total_health is not None
+    assert status.total_health.polls >= n_snapshots - 1
+    assert status.total_health.problems == 0
+    assert status.total_health.ended == status.total_health.polls
 
 
 async def test_backend_outage_is_buffered_and_drained_without_duplicates(

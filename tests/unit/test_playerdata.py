@@ -118,9 +118,10 @@ rows = st.builds(
 )
 
 
-@given(st.lists(rows, max_size=20, unique_by=lambda r: r.player_id))
-def test_round_trip_with_the_fake_server_format(players: list[SnapshotRow]) -> None:
-    text = format_player_data(players, datetime(2025, 1, 1, 0, 0, 0))
+@pytest.mark.parametrize("style", ["2025", "2026"])
+@given(players=st.lists(rows, max_size=20, unique_by=lambda r: r.player_id))
+def test_round_trip_with_the_fake_server_format(style: str, players: list[SnapshotRow]) -> None:
+    text = format_player_data(players, datetime(2025, 1, 1, 0, 0, 0), style)
     result = parse_player_data(text)
 
     assert result.errors == []
@@ -137,3 +138,58 @@ def test_round_trip_with_the_fake_server_format(players: list[SnapshotRow]) -> N
 @given(st.text(max_size=300))
 def test_never_raises_on_arbitrary_text(text: str) -> None:
     parse_player_data(text)
+
+
+def test_2025_format_with_the_first_player_glued_to_the_header() -> None:
+    result = parse_player_data(load("player_data_2025.txt"))
+    assert result.errors == []
+    assert [p.player_name for p in result.players] == ["First Player", "Second, Player"]
+    assert [p.dino_class for p in result.players] == ["Carnotaurus", "Hypsilophodon"]
+    assert result.header_timestamp == datetime(2025, 5, 14, 20, 11, 3)
+    assert not result.ended
+
+
+def test_2026_format_with_gender_mutations_and_end_marker() -> None:
+    result = parse_player_data(load("player_data_2026.txt"))
+    assert result.errors == []
+    assert result.ended
+    alpha, beta = result.players
+    assert (alpha.player_id, alpha.dino_class, alpha.growth) == ("76561198000000041", "Tyrannosaurus", 1.0)
+    assert (alpha.x, alpha.y, alpha.z) == (483129.59, -76220.472, 23256.202)
+    assert beta.player_name == "Beta, Dryo"
+    # Fields we know but do not use are not "unknown".
+    assert result.unknown_keys == set()
+
+
+def test_2026_empty_server() -> None:
+    result = parse_player_data(load("player_data_2026_empty.txt"))
+    assert (result.players, result.errors, result.ended) == ([], [], True)
+
+
+def test_nothing_after_the_end_marker_is_parsed() -> None:
+    text = load("player_data_2026.txt") + "Name: Late, PlayerID: 1, Location: X=0 Y=0 Z=0\n"
+    assert len(parse_player_data(text).players) == 2
+
+
+def test_unknown_fields_are_reported_by_name_only() -> None:
+    line = "Name: A, PlayerID: 1, Location: X=0 Y=0 Z=0, Class: Troodon, Nesting: Secret Spot, Diet: Meat"
+    result = parse_player_data(line)
+    assert result.errors == []
+    assert result.unknown_keys == {"Nesting", "Diet"}
+
+
+def test_unrecognisable_lines_are_salvaged_from_id_and_location() -> None:
+    # A made-up future format: different keys, but an id and an X/Y/Z triple.
+    line = "Player=Rex, SteamId 76561198000000051, Pos: (X=10.5 Y=-20.0 Z=3), Species=Allosaurus"
+    result = parse_player_data(line)
+    (player,) = result.players
+    assert (player.player_id, player.x, player.y, player.z) == ("76561198000000051", 10.5, -20.0, 3.0)
+    (error,) = result.errors
+    assert error.salvaged
+
+
+def test_salvage_refuses_ambiguous_lines() -> None:
+    line = "Kill: 76561198000000051 by 76561198000000052 at X=1 Y=2 Z=3"
+    result = parse_player_data(line)
+    assert result.players == []
+    assert not result.errors[0].salvaged
