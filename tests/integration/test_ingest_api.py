@@ -17,6 +17,7 @@ async def test_healthz(api: httpx.AsyncClient) -> None:
     response = await api.get("/healthz")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["revision"] == "unknown"  # set from the image's build argument in production
 
 
 async def test_ingest_stores_rows(api: httpx.AsyncClient, tenant: Tenant, repo: Repository) -> None:

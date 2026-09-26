@@ -1,13 +1,22 @@
 name: Release agent
 
-# Builds the one-file agent executables (Linux + Windows) with PyInstaller. A tag push `agent-vX.Y.Z` also
-# publishes a GitHub Release with both binaries and SHA256SUMS; workflow_dispatch only builds and uploads
-# workflow artifacts (useful to try a Windows build before tagging).
+# Builds the one-file agent executables (Linux + Windows) with PyInstaller and smoke-tests them.
+#
+# Normally CI calls this after a successful backend deploy, with publish: true, when agent/__init__.py has a
+# version that has not been released yet: the release then creates the tag agent-vX.Y.Z on that commit, so the
+# published agent always matches what the backend runs. A manually pushed agent-v* tag also publishes;
+# workflow_dispatch only builds and uploads workflow artifacts.
 
 on:
   push:
     tags: ["agent-v*"]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish a GitHub Release (and create its tag) for the version in agent/__init__.py
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,12 +81,19 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+    if: inputs.publish || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v'))
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: agent/__init__.py
+          sparse-checkout-cone-mode: false
+      - name: Read the agent version
+        id: version
+        run: echo "version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' agent/__init__.py)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -89,7 +105,10 @@ jobs:
           cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          name: Agent ${{ github.ref_name }}
+          # Creates the tag on this commit if it does not exist yet (the CI-driven path).
+          tag_name: agent-v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Agent agent-v${{ steps.version.outputs.version }}
           files: |
             release/espk-agent-*
             release/SHA256SUMS

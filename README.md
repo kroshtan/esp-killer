@@ -208,9 +208,15 @@ Blueprint:
 - Region `frankfurt`, because this is EU personal data.
 
 To set it up, create the service from the Blueprint, make the GHCR package public (or give Render registry
-credentials), add the service's deploy hook URL as the `RENDER_DEPLOY_HOOK_URL` repository secret, and enter the
-`ESPK_SMTP_*` values in the dashboard if you want email alerts. Manage orgs and keys from the service's shell with
+credentials), add the service's deploy hook URL as the `RENDER_DEPLOY_HOOK_URL` repository secret and its
+`/healthz` URL as the `ESPK_HEALTH_URL` repository variable, and enter the `ESPK_SMTP_*` values in the dashboard
+if you want email alerts. Manage orgs and keys from the service's shell with
 the CLI below. Without the secret, the CI `deploy` job skips with a warning.
+
+**Agent releases follow the backend.** When `agent/__init__.py` has a version that has not been released yet, CI
+publishes it as a GitHub Release (Linux and Windows binaries, `SHA256SUMS`, tag `agent-vX.Y.Z`) right after the
+backend deploy has gone live, so a released agent never talks to an older backend. Changing `agent/`, `shared/`
+or `packaging/` without bumping that version fails CI.
 
 The image's roles also work anywhere else: `ESPK_ROLE=api` (default), `worker`, or `all`; `PORT` is honoured.
 

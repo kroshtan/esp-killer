@@ -73,6 +73,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -96,3 +98,69 @@ jobs:
           # Deploying by digest rather than :latest means Render runs exactly this build.
           curl -fsS -X POST --get "$HOOK" --data-urlencode "imgURL=${IMAGE}" -o /dev/null
           echo "Deploy of ${IMAGE} triggered."
+      - name: Wait until the new build is live
+        # The hook only starts the deploy. The agent release waits for this step, so a published agent never
+        # talks to an older backend. Needs the repository variable ESPK_HEALTH_URL (the service's /healthz).
+        env:
+          HEALTH_URL: ${{ vars.ESPK_HEALTH_URL }}
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          set -uo pipefail
+          if [[ -z "$HOOK" || -z "$HEALTH_URL" ]]; then
+            echo "::warning::RENDER_DEPLOY_HOOK_URL or ESPK_HEALTH_URL is not set; not waiting for the deploy."
+            exit 0
+          fi
+          for _ in $(seq 1 60); do
+            revision=$(curl -fsS -m 10 "$HEALTH_URL" | python3 -c "import json,sys; print(json.load(sys.stdin).get('revision'))" 2>/dev/null)
+            if [[ "$revision" == "$GITHUB_SHA" ]]; then
+              echo "Live: $GITHUB_SHA"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::the deploy of $GITHUB_SHA did not go live within 10 minutes"
+          exit 1
+
+  # Blocks merging agent changes that would silently not be released: any change to the agent's code needs a new
+  # version in agent/__init__.py. Also tells release-agent whether this version is new.
+  agent-version:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # tags and history, to diff against the last release
+      - id: check
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' agent/__init__.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          last=$(git tag --list 'agent-v*' --sort=-version:refname | head -n 1)
+          if [[ -z "$last" ]]; then
+            echo "No agent release yet; $version will be published."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$last" == "agent-v$version" ]]; then
+            if ! git diff --quiet "$last" HEAD -- agent shared packaging; then
+              echo "::error::agent/, shared/ or packaging/ changed since $last; bump __version__ in agent/__init__.py"
+              exit 1
+            fi
+            echo "Agent unchanged since $last."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$(printf '%s\n' "${last#agent-v}" "$version" | sort -V | tail -n 1)" == "$version" ]]; then
+            echo "New agent version $version (last release $last)."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::agent version $version is older than the last release $last"
+            exit 1
+          fi
+
+  release-agent:
+    needs: [deploy, agent-version]
+    if: needs.agent-version.outputs.publish == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-agent.yaml
+    with:
+      publish: true

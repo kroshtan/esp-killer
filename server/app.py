@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.concurrency import run_in_threadpool
@@ -42,6 +43,8 @@ def create_app(settings: ServerSettings | None = None, repo: Repository | None =
         except Exception:
             logger.exception("health check: database unavailable")
             return JSONResponse({"status": "error", "database": "unavailable"}, status_code=503)
-        return JSONResponse({"status": "ok", "version": __version__})
+        return JSONResponse(
+            {"status": "ok", "version": __version__, "revision": os.environ.get("ESPK_REVISION", "unknown")}
+        )
 
     return app

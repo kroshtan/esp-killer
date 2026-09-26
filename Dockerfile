@@ -24,7 +24,10 @@ USER app
 
 # /data holds the SQLite database (with its -wal/-shm files) and config.yaml. It must be a directory mount, not a
 # single-file mount: the CLI rewrites config.yaml via a temp file and a rename in the same directory.
-ENV PATH="/app/.venv/bin:$PATH" \
+# The git commit this image was built from, reported by /healthz so CI can tell when a deploy is live.
+ARG REVISION=unknown
+ENV ESPK_REVISION=$REVISION \
+    PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     ESPK_DATABASE_PATH=/data/espk.db \
     ESPK_CONFIG_PATH=/data/config.yaml \

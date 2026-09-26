@@ -191,9 +191,12 @@ Two things drove the design and are worth knowing when reading flags:
   `tools`, `tests`, numpy, pandas, matplotlib, PIL, fastapi, starlette, uvicorn, yaml, the dev
   tools, setuptools and unused stdlib parts (tkinter, unittest, pydoc, ...). pygments stays in: rich uses it
   for tracebacks.
-- **Releases:** pushing a tag `agent-vX.Y.Z` (must match `agent/__init__.py`) runs
-  `.github/workflows/release-agent.yaml`, which builds on ubuntu-latest and windows-latest and publishes
-  `espk-agent-X.Y.Z-{linux,windows}-x86_64[.exe]` plus `SHA256SUMS` as a GitHub Release.
+- **Releases follow the backend.** CI's `agent-version` job fails when `agent/`, `shared/` or `packaging/`
+  changed since the last `agent-v*` release without a version bump in `agent/__init__.py`. When the version is
+  new, `release-agent` runs after the deploy job has seen the new build live (`/healthz` reports the image's git
+  commit as `revision`) and publishes the release, creating the tag. The backend deploys first because it must
+  accept anything the new agent sends; the agent's payload changes are always backwards compatible for that
+  reason. Pushing an `agent-v*` tag by hand still works.
 - **Windows is built and smoke-tested in CI** (the same test as Linux, blocking the release). A PyInstaller
   one-file exe on Windows is a launcher plus a child process, so the smoke test stops it with `taskkill /T`.
 - **Unsigned executables.** The Windows exe is not code-signed, so SmartScreen warns on first start and some
