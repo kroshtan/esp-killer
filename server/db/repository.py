@@ -1,19 +1,15 @@
 """
-Repository layer: the rest of the server talks to these methods, never to SQL directly.
+Repository for ingest: the API talks to these methods, never to SQL directly.
 
-The implementation uses SQLAlchemy Core with dialect-neutral statements, so moving to Postgres means changing
-the database URL, not this code.
+The dedupe check and the inserts run in one ``BEGIN IMMEDIATE`` transaction, so two concurrent uploads of the
+same snapshot cannot both store it.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from sqlalchemy import Engine, func, insert, select
-from sqlalchemy.exc import IntegrityError
-
-from server.db.tables import ingested_snapshots, positions
+from server.db.database import Database, ts
 from shared.models import Snapshot
 
 
@@ -25,8 +21,8 @@ class IngestResult:
 
 
 class Repository:
-    def __init__(self, engine: Engine) -> None:
-        self.engine = engine
+    def __init__(self, db: Database) -> None:
+        self.db = db
 
     def ingest(
         self, org_id: str, server_id: str, snapshots: Sequence[Snapshot], received_ts: datetime
@@ -40,66 +36,40 @@ class Repository:
         :param received_ts: when the batch arrived (UTC)
         :return: counts of new and duplicate snapshots and position rows written
         """
-        try:
-            return self._ingest(org_id, server_id, snapshots, received_ts)
-        except IntegrityError:
-            # A concurrent request inserted some of the same snapshots between our check and insert. Retrying
-            # sees them as existing.
-            return self._ingest(org_id, server_id, snapshots, received_ts)
-
-    def _ingest(
-        self, org_id: str, server_id: str, snapshots: Sequence[Snapshot], received_ts: datetime
-    ) -> IngestResult:
         ids = [str(s.snapshot_id) for s in snapshots]
-        with self.engine.begin() as conn:
-            existing: set[str] = set(
-                conn.scalars(
-                    select(ingested_snapshots.c.snapshot_id).where(
-                        ingested_snapshots.c.org_id == org_id,
-                        ingested_snapshots.c.server_id == server_id,
-                        ingested_snapshots.c.snapshot_id.in_(ids),
-                    )
+        received = ts(received_ts)
+        with self.db.transaction() as conn:
+            existing = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT snapshot_id FROM ingested_snapshots WHERE org_id = ? AND server_id = ?"
+                    f" AND snapshot_id IN ({','.join('?' * len(ids))})",
+                    [org_id, server_id, *ids],
                 )
+            }
+            # Skip stored ones, and keep the first of any snapshot repeated within the batch.
+            new: dict[str, Snapshot] = {}
+            for s in snapshots:
+                sid = str(s.snapshot_id)
+                if sid not in existing and sid not in new:
+                    new[sid] = s
+            conn.executemany(
+                "INSERT INTO ingested_snapshots (org_id, server_id, snapshot_id, captured_at, received_ts)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [(org_id, server_id, sid, ts(s.captured_at), received) for sid, s in new.items()],
             )
-            new = [s for s in snapshots if str(s.snapshot_id) not in existing]
-            # A batch may repeat a snapshot; keep the first.
-            unique = list({str(s.snapshot_id): s for s in reversed(new)}.values())[::-1]
-            if unique:
-                conn.execute(
-                    insert(ingested_snapshots),
-                    [
-                        {
-                            "org_id": org_id,
-                            "server_id": server_id,
-                            "snapshot_id": str(s.snapshot_id),
-                            "captured_at": s.captured_at,
-                            "received_ts": received_ts,
-                        }
-                        for s in unique
-                    ],
-                )
-            rows: list[dict[str, Any]] = [
-                {
-                    "org_id": org_id,
-                    "server_id": server_id,
-                    "player_id": p.player_id,
-                    "player_name": p.player_name,
-                    "dino_class": p.dino_class,
-                    "growth": p.growth,
-                    "x": p.x,
-                    "y": p.y,
-                    "z": p.z,
-                    "server_ts": s.captured_at,
-                    "received_ts": received_ts,
-                }
-                for s in unique
+            rows = [
+                (org_id, server_id, p.player_id, p.player_name, p.dino_class, p.growth, p.x, p.y, p.z)
+                + (ts(s.captured_at), received)
+                for s in new.values()
                 for p in s.players
             ]
-            if rows:
-                conn.execute(insert(positions), rows)
-        return IngestResult(
-            accepted_snapshots=len(unique), duplicate_snapshots=len(snapshots) - len(unique), rows=len(rows)
-        )
+            conn.executemany(
+                "INSERT INTO positions (org_id, server_id, player_id, player_name, dino_class, growth, x, y, z,"
+                " server_ts, received_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+        return IngestResult(accepted_snapshots=len(new), duplicate_snapshots=len(snapshots) - len(new), rows=len(rows))
 
     def count_positions(self, org_id: str | None = None) -> int:
         """
@@ -108,13 +78,11 @@ class Repository:
         :param org_id: restrict to one org
         :return: the count
         """
-        stmt = select(func.count()).select_from(positions)
-        if org_id is not None:
-            stmt = stmt.where(positions.c.org_id == org_id)
-        with self.engine.connect() as conn:
-            return int(conn.scalar(stmt) or 0)
+        with self.db.connect() as conn:
+            if org_id is None:
+                return int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
+            return int(conn.execute("SELECT COUNT(*) FROM positions WHERE org_id = ?", (org_id,)).fetchone()[0])
 
     def ping(self) -> None:
         """Check the database answers."""
-        with self.engine.connect() as conn:
-            conn.scalar(select(1))
+        self.db.ping()

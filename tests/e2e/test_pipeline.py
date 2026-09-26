@@ -12,12 +12,10 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
 
 from agent.config import AgentSettings, BackendSettings, RconSettings
 from agent.main import run_agent
 from server.db.repository import Repository
-from server.db.tables import ingested_snapshots, positions
 from shared.rcon_protocol import ReadOnlyCommand
 from tests.conftest import Tenant, rcon_port
 from tools.fake_rcon import FakeRconServer
@@ -66,10 +64,10 @@ async def run_for(settings: AgentSettings, transport: FlakyTransport, seconds: f
 
 
 def stored(repo: Repository) -> tuple[int, int, set[str]]:
-    with repo.engine.connect() as conn:
-        n_snapshots = conn.scalar(select(func.count()).select_from(ingested_snapshots)) or 0
-        n_rows = conn.scalar(select(func.count()).select_from(positions)) or 0
-        players: set[str] = set(conn.scalars(select(positions.c.player_id).distinct()))
+    with repo.db.connect() as conn:
+        n_snapshots = int(conn.execute("SELECT COUNT(*) FROM ingested_snapshots").fetchone()[0])
+        n_rows = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
+        players = {row[0] for row in conn.execute("SELECT DISTINCT player_id FROM positions")}
     return n_snapshots, n_rows, players
 
 
@@ -84,8 +82,8 @@ async def test_positions_flow_from_game_server_to_database(
     assert n_snapshots >= 4
     assert n_rows == n_snapshots * len(expected_players)
     assert players == expected_players  # including the scripted cheater
-    with repo.engine.connect() as conn:
-        row = conn.execute(select(positions).limit(1)).mappings().one()
+    with repo.db.connect() as conn:
+        row = conn.execute("SELECT * FROM positions LIMIT 1").fetchone()
     assert (row["org_id"], row["server_id"]) == ("test-org", "srv-1")
     assert row["dino_class"] is not None
     assert row["growth"] is not None

@@ -3,10 +3,9 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import select
 
+from server.db.database import parse_ts
 from server.db.repository import Repository
-from server.db.tables import positions
 from server.keys import generate_key
 from server.orgconfig import ServerEntry, load_config, save_config
 from tests.conftest import Tenant
@@ -33,8 +32,8 @@ async def test_ingest_stores_rows(api: httpx.AsyncClient, tenant: Tenant, repo: 
     assert response.status_code == 200, response.text
     body = response.json()
     assert (body["accepted_snapshots"], body["duplicate_snapshots"], body["rows"]) == (1, 0, 2)
-    with repo.engine.connect() as conn:
-        rows = conn.execute(select(positions).order_by(positions.c.player_id)).mappings().all()
+    with repo.db.connect() as conn:
+        rows = conn.execute("SELECT * FROM positions ORDER BY player_id").fetchall()
     first = rows[0]
     assert (first["org_id"], first["server_id"], first["player_id"]) == (
         "test-org",
@@ -43,8 +42,8 @@ async def test_ingest_stores_rows(api: httpx.AsyncClient, tenant: Tenant, repo: 
     )
     second = rows[1]
     assert (second["dino_class"], second["growth"], second["x"], second["y"]) == ("Carnotaurus", 0.75, 1.5, -2.5)
-    assert second["server_ts"] == captured
-    assert second["received_ts"] >= captured
+    assert parse_ts(second["server_ts"]) == captured
+    assert parse_ts(second["received_ts"]) >= captured
 
 
 async def test_uncompressed_body_is_accepted(api: httpx.AsyncClient, tenant: Tenant) -> None:

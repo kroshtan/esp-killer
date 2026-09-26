@@ -18,7 +18,7 @@ repos:
       - id: ruff-format
 
   # Runs from the project venv rather than an isolated hook env, so mypy sees the real dependencies
-  # (pydantic plugin, numpy, sqlalchemy) instead of a hand-maintained additional_dependencies list.
+  # (pydantic plugin, numpy, pandas) instead of a hand-maintained additional_dependencies list.
   - repo: local
     hooks:
       - id: mypy

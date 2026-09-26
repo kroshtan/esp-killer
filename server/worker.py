@@ -12,7 +12,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from types import FrameType
 
-from server.db.engine import make_engine
+from server.db.database import Database
 from server.db.scoring import ScoringRepository
 from server.orgconfig import ConfigStore
 from server.scoring.job import OrgRunResult, run_scoring
@@ -25,7 +25,7 @@ class Worker:
     def __init__(self, settings: ServerSettings, repo: ScoringRepository | None = None) -> None:
         self.settings = settings
         self.config = ConfigStore(settings.config_path)
-        self.repo = repo or ScoringRepository(make_engine(settings.database_url))
+        self.repo = repo or ScoringRepository(Database(settings.database_path))
         self.stop = threading.Event()
 
     def run_once(self, now: datetime | None = None) -> list[OrgRunResult]:

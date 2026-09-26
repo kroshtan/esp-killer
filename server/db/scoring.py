@@ -6,15 +6,15 @@ window twice or skip one.
 """
 
 import json
+import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, func, insert, select, update
 
-from server.db.tables import evidence, flags, player_scores, positions, scoring_state, spawn_episodes
+from server.db.database import Database, parse_ts, ts
 from server.scoring.combine import OrgEvidence, PlayerScore
 from server.scoring.features import AmbushEvidence, BeelineEvidence, SpawnEpisode
 
@@ -39,9 +39,13 @@ class Flag:
     note: str | None
 
 
+def _placeholders(n: int) -> str:
+    return ",".join("?" * n)
+
+
 class ScoringRepository:
-    def __init__(self, engine: Engine) -> None:
-        self.engine = engine
+    def __init__(self, db: Database) -> None:
+        self.db = db
 
     # --- positions ---
 
@@ -52,11 +56,9 @@ class ScoringRepository:
         :param org_id: the org
         :return: the time, or None if there are no positions
         """
-        with self.engine.connect() as conn:
-            value: datetime | None = conn.scalar(
-                select(func.min(positions.c.server_ts)).where(positions.c.org_id == org_id)
-            )
-        return value
+        with self.db.connect() as conn:
+            value = conn.execute("SELECT MIN(server_ts) FROM positions WHERE org_id = ?", (org_id,)).fetchone()[0]
+        return parse_ts(value) if value is not None else None
 
     def load_positions(self, org_id: str, since: datetime, until: datetime) -> pd.DataFrame:
         """
@@ -65,22 +67,15 @@ class ScoringRepository:
         :param org_id: the org
         :param since: inclusive start
         :param until: exclusive end
-        :return: columns server_id, player_id, player_name, dino_class, x, y (game units), server_ts (aware UTC)
+        :return: columns server_id, player_id, player_name, dino_class, x, y (game units), server_ts (UTC text)
         """
-        stmt = select(
-            positions.c.server_id,
-            positions.c.player_id,
-            positions.c.player_name,
-            positions.c.dino_class,
-            positions.c.x,
-            positions.c.y,
-            positions.c.server_ts,
-        ).where(positions.c.org_id == org_id, positions.c.server_ts >= since, positions.c.server_ts < until)
-        with self.engine.connect() as conn:
-            rows = conn.execute(stmt).all()
-        return pd.DataFrame(
-            rows, columns=["server_id", "player_id", "player_name", "dino_class", "x", "y", "server_ts"]
-        )
+        with self.db.connect() as conn:
+            return pd.read_sql_query(
+                "SELECT server_id, player_id, player_name, dino_class, x, y, server_ts FROM positions"
+                " WHERE org_id = ? AND server_ts >= ? AND server_ts < ?",
+                conn,
+                params=(org_id, ts(since), ts(until)),
+            )
 
     def latest_names(self, org_id: str, player_ids: Iterable[str]) -> dict[str, str]:
         """
@@ -93,22 +88,14 @@ class ScoringRepository:
         ids = list(player_ids)
         if not ids:
             return {}
-        latest = (
-            select(positions.c.player_id, func.max(positions.c.server_ts).label("ts"))
-            .where(positions.c.org_id == org_id, positions.c.player_id.in_(ids))
-            .group_by(positions.c.player_id)
-            .subquery()
-        )
-        stmt = (
-            select(positions.c.player_id, positions.c.player_name)
-            .join(
-                latest,
-                (positions.c.player_id == latest.c.player_id) & (positions.c.server_ts == latest.c.ts),
-            )
-            .where(positions.c.org_id == org_id)
-        )
-        with self.engine.connect() as conn:
-            return {str(pid): str(name) for pid, name in conn.execute(stmt)}
+        # SQLite returns the other columns from the row holding the MAX() (documented "bare column" behaviour).
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT player_id, player_name, MAX(server_ts) FROM positions"
+                f" WHERE org_id = ? AND player_id IN ({_placeholders(len(ids))}) GROUP BY player_id",
+                [org_id, *ids],
+            ).fetchall()
+        return {row["player_id"]: row["player_name"] for row in rows}
 
     # --- evidence ---
 
@@ -119,11 +106,9 @@ class ScoringRepository:
         :param org_id: the org
         :return: the time, or None if nothing has been processed
         """
-        with self.engine.connect() as conn:
-            value: datetime | None = conn.scalar(
-                select(scoring_state.c.processed_until).where(scoring_state.c.org_id == org_id)
-            )
-        return value
+        with self.db.connect() as conn:
+            row = conn.execute("SELECT processed_until FROM scoring_state WHERE org_id = ?", (org_id,)).fetchone()
+        return parse_ts(row[0]) if row is not None else None
 
     def save_window(self, org_id: str, window_end: datetime, ev: OrgEvidence) -> None:
         """
@@ -133,43 +118,39 @@ class ScoringRepository:
         :param window_end: end of the window (becomes the new ``processed_until``)
         :param ev: the window's evidence
         """
-        rows = [
-            {
-                "org_id": org_id,
-                "player_id": player_id,
-                "window_end": window_end,
-                "servers": ",".join(sorted(ev.servers.get(player_id, set()))),
-                "moving_s": ev.beeline[player_id].moving_s,
-                "beeline_episodes": ev.beeline[player_id].episodes,
-                "beeline_null": ev.beeline[player_id].null_episodes,
-                "beeline_start_sum_m": ev.beeline[player_id].start_distance_sum_m,
-                "ambush_waits": ev.ambush[player_id].waits,
-                "ambush_hits": ev.ambush[player_id].hits,
-                "ambush_null": ev.ambush[player_id].null_hits,
-            }
-            for player_id in ev.player_ids
-        ]
-        episodes = [
-            {
-                "org_id": org_id,
-                "player_id": e.player_id,
-                "window_end": window_end,
-                "dino_class": e.dino_class,
-                "duration_s": e.duration_s,
-                "censored": e.censored,
-            }
-            for e in ev.episodes
-        ]
-        with self.engine.begin() as conn:
-            if rows:
-                conn.execute(insert(evidence), rows)
-            if episodes:
-                conn.execute(insert(spawn_episodes), episodes)
-            updated = conn.execute(
-                update(scoring_state).where(scoring_state.c.org_id == org_id).values(processed_until=window_end)
+        end = ts(window_end)
+        with self.db.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO evidence (org_id, player_id, window_end, servers, moving_s, beeline_episodes,"
+                " beeline_null, beeline_start_sum_m, ambush_waits, ambush_hits, ambush_null)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        org_id,
+                        pid,
+                        end,
+                        ",".join(sorted(ev.servers.get(pid, set()))),
+                        ev.beeline[pid].moving_s,
+                        ev.beeline[pid].episodes,
+                        ev.beeline[pid].null_episodes,
+                        ev.beeline[pid].start_distance_sum_m,
+                        ev.ambush[pid].waits,
+                        ev.ambush[pid].hits,
+                        ev.ambush[pid].null_hits,
+                    )
+                    for pid in ev.player_ids
+                ],
             )
-            if updated.rowcount == 0:
-                conn.execute(insert(scoring_state).values(org_id=org_id, processed_until=window_end))
+            conn.executemany(
+                "INSERT INTO spawn_episodes (org_id, player_id, window_end, dino_class, duration_s, censored)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [(org_id, e.player_id, end, e.dino_class, e.duration_s, e.censored) for e in ev.episodes],
+            )
+            conn.execute(
+                "INSERT INTO scoring_state (org_id, processed_until) VALUES (?, ?)"
+                " ON CONFLICT (org_id) DO UPDATE SET processed_until = excluded.processed_until",
+                (org_id, end),
+            )
 
     def load_evidence(self, org_id: str, since: datetime) -> OrgEvidence:
         """
@@ -180,10 +161,8 @@ class ScoringRepository:
         :return: the summed evidence
         """
         ev = OrgEvidence()
-        with self.engine.connect() as conn:
-            for row in conn.execute(
-                select(evidence).where(evidence.c.org_id == org_id, evidence.c.window_end > since)
-            ).mappings():
+        with self.db.connect() as conn:
+            for row in conn.execute("SELECT * FROM evidence WHERE org_id = ? AND window_end > ?", (org_id, ts(since))):
                 pid = row["player_id"]
                 ev.beeline[pid] += BeelineEvidence(
                     row["moving_s"], row["beeline_episodes"], row["beeline_null"], row["beeline_start_sum_m"]
@@ -191,8 +170,10 @@ class ScoringRepository:
                 ev.ambush[pid] += AmbushEvidence(row["ambush_waits"], row["ambush_hits"], row["ambush_null"])
                 ev.servers[pid] |= set(filter(None, row["servers"].split(",")))
             for row in conn.execute(
-                select(spawn_episodes).where(spawn_episodes.c.org_id == org_id, spawn_episodes.c.window_end > since)
-            ).mappings():
+                "SELECT player_id, dino_class, duration_s, censored FROM spawn_episodes"
+                " WHERE org_id = ? AND window_end > ?",
+                (org_id, ts(since)),
+            ):
                 ev.episodes.append(
                     SpawnEpisode(row["player_id"], row["dino_class"], row["duration_s"], bool(row["censored"]))
                 )
@@ -208,22 +189,21 @@ class ScoringRepository:
         :param computed_at: when the scores were computed
         :param scores: the scores
         """
-        if not scores:
-            return
-        with self.engine.begin() as conn:
-            conn.execute(
-                insert(player_scores),
+        with self.db.transaction() as conn:
+            conn.executemany(
+                "INSERT INTO player_scores (org_id, player_id, computed_at, score, beeline, ttc, ambush, details)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    {
-                        "org_id": org_id,
-                        "player_id": s.player_id,
-                        "computed_at": computed_at,
-                        "score": s.score,
-                        "beeline": s.beeline.score if s.beeline else None,
-                        "ttc": s.ttc.score if s.ttc else None,
-                        "ambush": s.ambush.score if s.ambush else None,
-                        "details": json.dumps(s.details()),
-                    }
+                    (
+                        org_id,
+                        s.player_id,
+                        ts(computed_at),
+                        s.score,
+                        s.beeline.score if s.beeline else None,
+                        s.ttc.score if s.ttc else None,
+                        s.ambush.score if s.ambush else None,
+                        json.dumps(s.details()),
+                    )
                     for s in scores
                 ],
             )
@@ -239,13 +219,13 @@ class ScoringRepository:
         ids = list(player_ids)
         if not ids:
             return []
-        stmt = (
-            select(flags)
-            .where(flags.c.org_id == org_id, flags.c.player_id.in_(ids))
-            .order_by(flags.c.created_at.desc(), flags.c.id.desc())
-        )
-        with self.engine.connect() as conn:
-            return [_flag(row) for row in conn.execute(stmt).mappings()]
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM flags WHERE org_id = ? AND player_id IN ({_placeholders(len(ids))})"
+                " ORDER BY created_at DESC, id DESC",
+                [org_id, *ids],
+            ).fetchall()
+        return [_flag(row) for row in rows]
 
     def create_flag(self, org_id: str, player_name: str, s: PlayerScore, now: datetime) -> int:
         """
@@ -257,21 +237,13 @@ class ScoringRepository:
         :param now: current time
         :return: the new flag's id
         """
-        with self.engine.begin() as conn:
-            result = conn.execute(
-                insert(flags).values(
-                    org_id=org_id,
-                    player_id=s.player_id,
-                    player_name=player_name,
-                    status=OPEN,
-                    score=s.score,
-                    max_score=s.score,
-                    details=json.dumps(s.details()),
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
-            return int(result.inserted_primary_key[0])  # type: ignore[index]
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "INSERT INTO flags (org_id, player_id, player_name, status, score, max_score, details, created_at,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                (org_id, s.player_id, player_name, OPEN, s.score, s.score, json.dumps(s.details()), ts(now), ts(now)),
+            ).fetchone()
+        return int(row[0])
 
     def update_flag(self, flag: Flag, player_name: str, s: PlayerScore, now: datetime) -> None:
         """
@@ -282,17 +254,10 @@ class ScoringRepository:
         :param s: the latest score
         :param now: current time
         """
-        with self.engine.begin() as conn:
+        with self.db.transaction() as conn:
             conn.execute(
-                update(flags)
-                .where(flags.c.id == flag.id)
-                .values(
-                    player_name=player_name,
-                    score=s.score,
-                    max_score=max(flag.max_score, s.score),
-                    details=json.dumps(s.details()),
-                    updated_at=now,
-                )
+                "UPDATE flags SET player_name = ?, score = ?, max_score = ?, details = ?, updated_at = ? WHERE id = ?",
+                (player_name, s.score, max(flag.max_score, s.score), json.dumps(s.details()), ts(now), flag.id),
             )
 
     def list_flags(self, org_id: str | None = None, status: str | None = None) -> list[Flag]:
@@ -303,13 +268,17 @@ class ScoringRepository:
         :param status: restrict to one status
         :return: the flags
         """
-        stmt = select(flags).order_by(flags.c.created_at.desc(), flags.c.id.desc())
+        where, params = [], []
         if org_id is not None:
-            stmt = stmt.where(flags.c.org_id == org_id)
+            where.append("org_id = ?")
+            params.append(org_id)
         if status is not None:
-            stmt = stmt.where(flags.c.status == status)
-        with self.engine.connect() as conn:
-            return [_flag(row) for row in conn.execute(stmt).mappings()]
+            where.append("status = ?")
+            params.append(status)
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        with self.db.connect() as conn:
+            rows = conn.execute(f"SELECT * FROM flags{clause} ORDER BY created_at DESC, id DESC", params).fetchall()
+        return [_flag(row) for row in rows]
 
     def mark_false_positive(self, flag_id: int, now: datetime, note: str | None = None) -> Flag | None:
         """
@@ -320,17 +289,15 @@ class ScoringRepository:
         :param note: optional reason
         :return: the updated flag, or None if it does not exist
         """
-        with self.engine.begin() as conn:
-            conn.execute(
-                update(flags)
-                .where(flags.c.id == flag_id)
-                .values(status=FALSE_POSITIVE, resolved_at=now, updated_at=now, note=note)
-            )
-            row = conn.execute(select(flags).where(flags.c.id == flag_id)).mappings().first()
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "UPDATE flags SET status = ?, resolved_at = ?, updated_at = ?, note = ? WHERE id = ? RETURNING *",
+                (FALSE_POSITIVE, ts(now), ts(now), note, flag_id),
+            ).fetchone()
         return _flag(row) if row is not None else None
 
 
-def _flag(row: Any) -> Flag:
+def _flag(row: sqlite3.Row) -> Flag:
     return Flag(
         id=row["id"],
         org_id=row["org_id"],
@@ -340,8 +307,8 @@ def _flag(row: Any) -> Flag:
         score=row["score"],
         max_score=row["max_score"],
         details=json.loads(row["details"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        resolved_at=row["resolved_at"],
+        created_at=parse_ts(row["created_at"]),
+        updated_at=parse_ts(row["updated_at"]),
+        resolved_at=parse_ts(row["resolved_at"]) if row["resolved_at"] is not None else None,
         note=row["note"],
     )

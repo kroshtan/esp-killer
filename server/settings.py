@@ -10,7 +10,7 @@ class ServerSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ESPK_", extra="ignore")
 
     config_path: Path = Path("config.yaml")
-    database_url: str = "sqlite:///data/espk.db"
+    database_path: Path = Path("data/espk.db")
 
     # Request limits. Compressed and decompressed sizes are capped separately so a small gzip bomb cannot
     # expand into memory.

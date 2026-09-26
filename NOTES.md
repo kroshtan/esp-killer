@@ -115,9 +115,14 @@ Two things drove the design and are worth knowing when reading flags:
 - **config.yaml reload** keys on (mtime, inode, size). An invalid file is logged and ignored, and the previous
   config stays active. The CLI rewrites the file without its comments.
 - **Single uv project** (`package = false`) for the monorepo. The agent never imports `server`, `tools`,
-  numpy, pandas, matplotlib, sqlalchemy or fastapi, and a test enforces this so the PyInstaller binary stays
+  numpy, pandas, matplotlib or fastapi, and a test enforces this so the PyInstaller binary stays
   small.
-- **Schema** is created with `metadata.create_all`. Add alembic before the first schema change in production.
+- **No ORM.** The database is SQLite through the standard library with plain SQL (`server/db/`). Each operation
+  opens a short-lived connection (thread-safe for the API's threadpool), writes use `BEGIN IMMEDIATE` so
+  read-then-write transactions cannot race, and the schema is a list of migrations tracked in
+  `PRAGMA user_version`. Timestamps are fixed-width UTC ISO text. A Postgres port is a second implementation of
+  the two repositories (placeholders differ; the SQL itself is portable, including `RETURNING` and
+  `ON CONFLICT`), except `latest_names`, which relies on SQLite's documented bare-column-with-MAX behaviour.
 - **License:** Apache-2.0.
 
 ## Known limitations

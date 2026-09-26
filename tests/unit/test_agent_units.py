@@ -154,7 +154,7 @@ def test_agent_does_not_import_server_side_code() -> None:
     code = (
         "import sys, agent.main\n"
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in "
-        "{'server', 'tools', 'numpy', 'pandas', 'matplotlib', 'sqlalchemy', 'fastapi'})\n"
+        "{'server', 'tools', 'numpy', 'pandas', 'matplotlib', 'fastapi'})\n"
         "print(','.join(bad))"
     )
     out = subprocess.run([sys.executable, "-c", code], cwd=REPO, capture_output=True, text=True, check=True)

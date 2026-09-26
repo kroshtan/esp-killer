@@ -12,7 +12,7 @@ from typing import Annotated
 import typer
 from pydantic import TypeAdapter, ValidationError
 
-from server.db.engine import make_engine
+from server.db.database import Database
 from server.db.scoring import FLAG_STATUSES, OPEN, ScoringRepository
 from server.keys import generate_key, hash_key
 from server.orgconfig import AlertDestinations, OrgEntry, ServerEntry, Slug, load_config, save_config
@@ -24,7 +24,7 @@ ConfigOption = Annotated[
     Path | None, typer.Option("--config", help="config.yaml path (default: $ESPK_CONFIG_PATH or ./config.yaml)")
 ]
 DatabaseOption = Annotated[
-    str | None, typer.Option("--database-url", help="database URL (default: $ESPK_DATABASE_URL)")
+    Path | None, typer.Option("--database", help="SQLite database path (default: $ESPK_DATABASE_PATH)")
 ]
 
 
@@ -32,8 +32,8 @@ def _config_path(config: Path | None) -> Path:
     return config if config is not None else ServerSettings().config_path
 
 
-def _scoring_repo(database_url: str | None) -> ScoringRepository:
-    return ScoringRepository(make_engine(database_url or ServerSettings().database_url))
+def _scoring_repo(database: Path | None) -> ScoringRepository:
+    return ScoringRepository(Database(database or ServerSettings().database_path))
 
 
 _SLUG = TypeAdapter(Slug)
@@ -123,12 +123,12 @@ def revoke_key(
 def list_flags(
     org: Annotated[str | None, typer.Option(help="only this org")] = None,
     status: Annotated[str, typer.Option(help="open, false_positive or all")] = OPEN,
-    database_url: DatabaseOption = None,
+    database: DatabaseOption = None,
 ) -> None:
     """List flagged players with their scores and the behaviours behind them."""
     if status != "all" and status not in FLAG_STATUSES:
         raise _fail(f"status must be one of {', '.join(FLAG_STATUSES)} or all")
-    found = _scoring_repo(database_url).list_flags(org_id=org, status=None if status == "all" else status)
+    found = _scoring_repo(database).list_flags(org_id=org, status=None if status == "all" else status)
     if not found:
         typer.echo("no flags")
         return
@@ -148,10 +148,10 @@ def list_flags(
 def mark_false_positive(
     flag_id: Annotated[int, typer.Argument(help="flag id from list-flags")],
     note: Annotated[str | None, typer.Option(help="why it was a false positive")] = None,
-    database_url: DatabaseOption = None,
+    database: DatabaseOption = None,
 ) -> None:
     """Mark a flag as a false positive. The player is not flagged again for the configured suppression period."""
-    flag = _scoring_repo(database_url).mark_false_positive(flag_id, datetime.now(UTC), note)
+    flag = _scoring_repo(database).mark_false_positive(flag_id, datetime.now(UTC), note)
     if flag is None:
         raise _fail(f"no flag #{flag_id}")
     typer.echo(f"flag #{flag.id} ({flag.player_name}) marked as false positive")

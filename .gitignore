@@ -23,3 +23,6 @@ htmlcov/
 build/
 dist/
 .DS_Store
+
+# Local Claude Code state (agent worktrees)
+.claude/

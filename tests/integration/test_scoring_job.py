@@ -7,14 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from sqlalchemy import func, select
 from typer.testing import CliRunner
 
 from server.cli import app as cli_app
-from server.db.engine import make_engine
+from server.db.database import Database
 from server.db.repository import Repository
 from server.db.scoring import FALSE_POSITIVE, OPEN, ScoringRepository
-from server.db.tables import evidence, player_scores
 from server.orgconfig import OrgConfig, OrgEntry, ServerEntry, save_config
 from server.scoring.combine import PlayerScore
 from server.scoring.config import ScoringConfig
@@ -51,20 +49,20 @@ def ingest_frame(repo: Repository, frame: pd.DataFrame, server_id: str) -> None:
 
 
 @pytest.fixture(scope="module")
-def database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, dict[str, str]]]:
-    url = f"sqlite:///{tmp_path_factory.mktemp('db') / 'espk.db'}"
+def database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Path, dict[str, str]]]:
+    path = tmp_path_factory.mktemp("db") / "espk.db"
     world = mixed_world(900)
-    ingest_frame(Repository(make_engine(url)), record(world, HOURS * 3600), "s1")
-    yield url, archetypes(world)
+    ingest_frame(Repository(Database(path)), record(world, HOURS * 3600), "s1")
+    yield path, archetypes(world)
 
 
 @pytest.fixture
-def repo(database: tuple[str, dict[str, str]]) -> ScoringRepository:
-    return ScoringRepository(make_engine(database[0]))
+def repo(database: tuple[Path, dict[str, str]]) -> ScoringRepository:
+    return ScoringRepository(Database(database[0]))
 
 
 def test_job_processes_windows_scores_and_flags_cheaters(
-    repo: ScoringRepository, database: tuple[str, dict[str, str]]
+    repo: ScoringRepository, database: tuple[Path, dict[str, str]]
 ) -> None:
     arch = database[1]
     now = START + timedelta(hours=HOURS) + LAG
@@ -86,9 +84,9 @@ def test_job_processes_windows_scores_and_flags_cheaters(
     (again,) = run_scoring(repo, CONFIG, now, lag=LAG)
     assert again.windows == 0
     assert len(repo.list_flags(ORG)) == len(flagged)
-    with repo.engine.connect() as conn:
-        windows = conn.scalar(select(func.count(func.distinct(evidence.c.window_end))))
-        score_rows = conn.scalar(select(func.count()).select_from(player_scores))
+    with repo.db.connect() as conn:
+        windows = conn.execute("SELECT COUNT(DISTINCT window_end) FROM evidence").fetchone()[0]
+        score_rows = conn.execute("SELECT COUNT(*) FROM player_scores").fetchone()[0]
     assert windows == 2
     assert score_rows == len(arch)
 
@@ -106,7 +104,7 @@ def _score(player: str, score: float) -> PlayerScore:
 
 
 def test_flag_lifecycle(tmp_path: Path) -> None:
-    repo = ScoringRepository(make_engine(f"sqlite:///{tmp_path / 'f.db'}"))
+    repo = ScoringRepository(Database(tmp_path / "f.db"))
     cfg = ScoringConfig()
     now = START
 
@@ -127,28 +125,30 @@ def test_flag_lifecycle(tmp_path: Path) -> None:
 
 
 def test_cli_lists_flags_and_marks_false_positives(tmp_path: Path) -> None:
-    url = f"sqlite:///{tmp_path / 'c.db'}"
-    repo = ScoringRepository(make_engine(url))
+    path = tmp_path / "c.db"
+    repo = ScoringRepository(Database(path))
     (flag_id,) = apply_flags(repo, ORG, [_score("76561198000000042", 0.8)], ScoringConfig(), START)
     runner = CliRunner()
 
-    listed = runner.invoke(cli_app, ["list-flags", "--database-url", url])
+    listed = runner.invoke(cli_app, ["list-flags", "--database", str(path)])
     assert listed.exit_code == 0
     assert f"#{flag_id}" in listed.stdout
     assert "76561198000000042" in listed.stdout
 
-    marked = runner.invoke(cli_app, ["mark-false-positive", str(flag_id), "--note", "x", "--database-url", url])
+    marked = runner.invoke(cli_app, ["mark-false-positive", str(flag_id), "--note", "x", "--database", str(path)])
     assert marked.exit_code == 0
-    assert "no flags" in runner.invoke(cli_app, ["list-flags", "--database-url", url]).stdout
-    assert "false_positive" in runner.invoke(cli_app, ["list-flags", "--status", "all", "--database-url", url]).stdout
-    assert runner.invoke(cli_app, ["mark-false-positive", "999", "--database-url", url]).exit_code == 1
-    assert runner.invoke(cli_app, ["list-flags", "--status", "bogus", "--database-url", url]).exit_code == 1
+    assert "no flags" in runner.invoke(cli_app, ["list-flags", "--database", str(path)]).stdout
+    assert (
+        "false_positive" in runner.invoke(cli_app, ["list-flags", "--status", "all", "--database", str(path)]).stdout
+    )
+    assert runner.invoke(cli_app, ["mark-false-positive", "999", "--database", str(path)]).exit_code == 1
+    assert runner.invoke(cli_app, ["list-flags", "--status", "bogus", "--database", str(path)]).exit_code == 1
 
 
 def test_worker_runs_the_job_for_orgs_in_the_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     save_config(config_path, CONFIG)
-    settings = ServerSettings(config_path=config_path, database_url=f"sqlite:///{tmp_path / 'w.db'}")
+    settings = ServerSettings(config_path=config_path, database_path=tmp_path / "w.db")
     worker = Worker(settings)
     (result,) = worker.run_once(START)
     assert (result.org_id, result.windows) == (ORG, 0)  # no data yet

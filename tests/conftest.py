@@ -38,7 +38,7 @@ def tenant(tmp_path: Path) -> Tenant:
 
 @pytest.fixture
 def settings(tmp_path: Path, tenant: Tenant) -> ServerSettings:
-    return ServerSettings(config_path=tenant.config_path, database_url=f"sqlite:///{tmp_path / 'espk.db'}")
+    return ServerSettings(config_path=tenant.config_path, database_path=tmp_path / "espk.db")
 
 
 @pytest.fixture
