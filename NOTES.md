@@ -194,8 +194,8 @@ Two things drove the design and are worth knowing when reading flags:
 - **Releases:** pushing a tag `agent-vX.Y.Z` (must match `agent/__init__.py`) runs
   `.github/workflows/release-agent.yaml`, which builds on ubuntu-latest and windows-latest and publishes
   `espk-agent-X.Y.Z-{linux,windows}-x86_64[.exe]` plus `SHA256SUMS` as a GitHub Release.
-- **Windows is built in CI only** and has not been run by hand. Its smoke test runs in CI but is informational
-  (`continue-on-error`) until it has proven stable.
+- **Windows is built and smoke-tested in CI** (the same test as Linux, blocking the release). A PyInstaller
+  one-file exe on Windows is a launcher plus a child process, so the smoke test stops it with `taskkill /T`.
 - **Unsigned executables.** The Windows exe is not code-signed, so SmartScreen warns on first start and some
   antivirus products flag PyInstaller binaries. UPX is off to reduce false positives. Code signing is a known
   gap.

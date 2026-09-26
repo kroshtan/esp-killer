@@ -51,14 +51,8 @@ jobs:
       - name: Build
         run: uv run --group build pyinstaller packaging/espk-agent.spec --noconfirm --clean
 
-      - name: Smoke test (Linux)
-        if: runner.os == 'Linux'
-        run: uv run python packaging/smoke_test.py dist/${{ matrix.exe }}
-
-      - name: Smoke test (Windows, informational)
-        # Not verified outside CI yet; report failures without blocking the release until it has proven stable.
-        if: runner.os == 'Windows'
-        continue-on-error: true
+      - name: Smoke test
+        # Drives the built binary against the fake RCON server and a local API; a failure blocks the release.
         run: uv run python packaging/smoke_test.py dist/${{ matrix.exe }}
 
       - name: Name the binary after version and platform
