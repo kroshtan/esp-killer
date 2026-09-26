@@ -35,6 +35,12 @@ fake-rcon:  ## Run the fake Evrima RCON server on localhost:$(RCON_PORT) (passwo
 agent:  ## Run the agent with agent.toml
 	$(PYTHON) -m uv run python -m agent run --config agent.toml
 
+agent-build: create-venv  ## Build the one-file agent binary dist/espk-agent[.exe] with PyInstaller
+	$(PYTHON) -m uv run --group build pyinstaller packaging/espk-agent.spec --noconfirm --clean
+
+agent-smoke:  ## Smoke-test the built agent binary against a local fake RCON + API
+	$(PYTHON) -m uv run python packaging/smoke_test.py dist/espk-agent
+
 fix:  ## Run pre-commit (ruff, mypy, pydoclint, whitespace) on all files
 	$(VENV_DIR)/bin/pre-commit run --all-files
 

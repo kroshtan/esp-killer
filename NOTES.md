@@ -154,14 +154,33 @@ Two things drove the design and are worth knowing when reading flags:
   `python -m server.worker`. The image holds only `server/` and `shared/` (no agent, tools or tests), runs as uid
   10001, and keeps `espk.db` and `config.yaml` in one `/data` volume. It is a directory mount because the CLI
   replaces `config.yaml` with a rename in the same directory, which fails on a single-file bind mount.
-- **The worker starts after the API is healthy.** Both processes migrate the database on start, and the migration
-  reads `user_version` before taking the write lock, so two processes creating a fresh file at the same moment
-  could both try to create the tables. `depends_on: condition: service_healthy` avoids that.
+- **The worker starts after the API is healthy** (`depends_on: condition: service_healthy`). Migrations are
+  race-safe on their own (they take the write lock and re-read `user_version`), so this is only tidiness.
 - **API port on 127.0.0.1 only.** Agents need HTTPS, so a TLS proxy is always in front. The optional Caddy
   override trusts forwarded headers from any peer, which is acceptable only because the API is not reachable
   from outside except through Caddy, and because auth and rate limits key on the API key, not the client IP.
 - **No access logs** (uvicorn `--no-access-log`, no `log` in the Caddyfile): client IPs are personal data too.
 - **SQLite on a local volume only.** WAL mode needs working file locks and shared memory; NFS/SMB break both.
+
+### Packaging (agent)
+
+- **One-file PyInstaller binary** per OS, so server admins download one file: `make agent-build` builds
+  `dist/espk-agent` (Linux) or `dist/espk-agent.exe` (Windows) from `packaging/espk-agent.spec`; PyInstaller
+  is in the `build` dependency group only. `make agent-smoke` runs `packaging/smoke_test.py`, which drives the
+  built binary (`--version`, `--help`, `check`, 10 s of `run`) against the fake RCON server and a local API
+  and checks that rows reached the database.
+- **Size:** about 20 MB on Linux (mostly libpython and pydantic-core). The spec explicitly excludes `server`,
+  `tools`, `tests`, numpy, pandas, matplotlib, PIL, fastapi, starlette, uvicorn, yaml, the dev
+  tools, setuptools and unused stdlib parts (tkinter, unittest, pydoc, ...). pygments stays in: rich uses it
+  for tracebacks.
+- **Releases:** pushing a tag `agent-vX.Y.Z` (must match `agent/__init__.py`) runs
+  `.github/workflows/release-agent.yaml`, which builds on ubuntu-latest and windows-latest and publishes
+  `espk-agent-X.Y.Z-{linux,windows}-x86_64[.exe]` plus `SHA256SUMS` as a GitHub Release.
+- **Windows is built in CI only** and has not been run by hand. Its smoke test runs in CI but is informational
+  (`continue-on-error`) until it has proven stable.
+- **Unsigned executables.** The Windows exe is not code-signed, so SmartScreen warns on first start and some
+  antivirus products flag PyInstaller binaries. UPX is off to reduce false positives. Code signing is a known
+  gap.
 
 ## Known limitations
 

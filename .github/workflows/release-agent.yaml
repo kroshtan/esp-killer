@@ -1,0 +1,107 @@
+name: Release agent
+
+# Builds the one-file agent executables (Linux + Windows) with PyInstaller. A tag push `agent-vX.Y.Z` also
+# publishes a GitHub Release with both binaries and SHA256SUMS; workflow_dispatch only builds and uploads
+# workflow artifacts (useful to try a Windows build before tagging).
+
+on:
+  push:
+    tags: ["agent-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "1"  # never re-resolve uv.lock in CI
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            exe: espk-agent
+          - os: windows-latest
+            platform: windows-x86_64
+            exe: espk-agent.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install dependencies
+        # Default + dev groups (the smoke test runs the server and fake RCON from source) + PyInstaller.
+        run: uv sync --group build --frozen
+
+      - name: Read the agent version
+        id: version
+        run: |
+          version=$(uv run python -c "import agent; print(agent.__version__)" | tr -d '\r')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "agent-v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match agent/__init__.py version $version"
+            exit 1
+          fi
+
+      - name: Build
+        run: uv run --group build pyinstaller packaging/espk-agent.spec --noconfirm --clean
+
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: uv run python packaging/smoke_test.py dist/${{ matrix.exe }}
+
+      - name: Smoke test (Windows, informational)
+        # Not verified outside CI yet; report failures without blocking the release until it has proven stable.
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        run: uv run python packaging/smoke_test.py dist/${{ matrix.exe }}
+
+      - name: Name the binary after version and platform
+        id: asset
+        run: |
+          ext="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          name="espk-agent-${{ steps.version.outputs.version }}-${{ matrix.platform }}${ext}"
+          mkdir -p release
+          cp "dist/${{ matrix.exe }}" "release/$name"
+          ls -l release
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.asset.outputs.name }}
+          path: release/${{ steps.asset.outputs.name }}
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum espk-agent-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Agent ${{ github.ref_name }}
+          files: |
+            release/espk-agent-*
+            release/SHA256SUMS
+          fail_on_unmatched_files: true
+          body: |
+            One-file agent executables. Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
+
+            The Windows executable is not code-signed, so SmartScreen may warn on first start
+            ("More info" -> "Run anyway").

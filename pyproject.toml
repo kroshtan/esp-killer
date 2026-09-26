@@ -27,6 +27,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+build = [
+    "pyinstaller>=6.22.3",
+]
 dev = [
     "uv>=0.11.11",
     "hypothesis>=6.140",
@@ -83,6 +86,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
 "tests/**" = ["D102", "D103", "D105", "PLR2004"]
+# Build/release scripts report progress on stdout.
+"packaging/**" = ["T20"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agent", "server", "shared", "tools"]
