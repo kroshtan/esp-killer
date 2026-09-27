@@ -26,6 +26,8 @@ dependencies = [
     "matplotlib~=3.10",
     "pyarrow~=25.0",
     "boto3~=1.43",
+    # server + trainer: the information-leakage model (server/training/leakage.py)
+    "lightgbm~=4.7",
 ]
 
 [dependency-groups]
@@ -92,7 +94,7 @@ ignore = [
 "packaging/**" = ["T20"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["agent", "server", "shared", "tools"]
+known-first-party = ["agent", "server", "shared", "tools", "trainer"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
@@ -136,6 +138,7 @@ addopts = [
     "--cov=server",
     "--cov=shared",
     "--cov=tools",
+    "--cov=trainer",
     "--strict-markers",
     "--cov-report=term",
     "--cov-report=xml",
