@@ -8,14 +8,30 @@ agent polls.
 
 from collections.abc import Callable
 
+import numpy as np
 import pandas as pd
 
 from server.scoring.game import GameProfile, load_profile
-from tools.sim.behaviours import AmbushCheater, BeelineCheater, Behaviour, GroupMember, Hunter, Roamer
-from tools.sim.world import DINO_CLASSES, World
+from tools.sim.behaviours import (
+    AmbushCheater,
+    BeelineCheater,
+    Behaviour,
+    Clan,
+    ClanMember,
+    EspClanMember,
+    GroupMember,
+    Hunter,
+    Roamer,
+)
+from tools.sim.world import DINO_CLASSES, SimPlayer, World
 
 HONEST = ("roamer", "waterhole", "camper", "hunter", "group")
 CHEATERS = ("beeline_cheater", "ambush_cheater", "subtle_cheater")
+# Clan archetypes (see :func:`clan_world`): honest members, and a member who shares what ESP shows with the clan.
+CLAN_HONEST = ("clan_member", "clan_hunter", "clan_spotter")
+CLAN_CHEATERS = ("clan_esp",)
+SOLO_HONEST = ("roamer", "waterhole", "camper", "hunter")  # honest archetypes that work without a group
+PTERANODON = "Pteranodon"
 
 # Cheater archetype -> behaviour, given a walking speed and the class's awareness range ("far" means beyond it).
 CHEATER_BEHAVIOURS: dict[str, Callable[[float, float], Behaviour]] = {
@@ -65,28 +81,150 @@ def mixed_world(
     world = World(half_size_m=half_size_m, seed=seed, death_rate_per_s=1 / 1500)
     pois = [world.random_point(margin_m=600.0) for _ in range(4)]
 
-    for _ in range(roamers):
-        world.add_player(Roamer(speed_mps=_speed(world)), archetype="roamer", join_at=_join_time(world))
-    for _ in range(waterhole):
-        world.add_player(
-            Roamer(speed_mps=_speed(world), pois=pois, poi_bias=0.9), archetype="waterhole", join_at=_join_time(world)
-        )
-    for _ in range(campers):
-        camper = Roamer(speed_mps=_speed(world), pois=pois, poi_bias=0.8, pause_s=(300.0, 900.0))
-        world.add_player(camper, archetype="camper", join_at=_join_time(world))
-    for _ in range(hunters):
-        cls = _dino_class(world)
-        hunter = Hunter(awareness_m=profile.awareness_m(cls), speed_mps=_speed(world), pois=pois, poi_bias=0.3)
-        world.add_player(hunter, archetype="hunter", join_at=_join_time(world), dino_class=cls)
+    for kind, count in (("roamer", roamers), ("waterhole", waterhole), ("camper", campers), ("hunter", hunters)):
+        for _ in range(count):
+            _add_solo_honest(world, kind, pois, profile)
     for _ in range(groups):
         leader = world.add_player(Roamer(speed_mps=5.0, pois=pois, poi_bias=0.5), archetype="group")
         for _ in range(group_size - 1):
             world.add_player(GroupMember(leader=leader, speed_mps=5.0), archetype="group", pos=leader.pos)
     for kind in cheaters:
-        cls = _dino_class(world)
-        behaviour = CHEATER_BEHAVIOURS[kind](_speed(world), profile.awareness_m(cls))
-        world.add_player(behaviour, archetype=kind, join_at=_join_time(world), dino_class=cls)
+        _add_cheater(world, kind, profile)
     return world
+
+
+def _add_solo_honest(world: World, kind: str, pois: list[np.ndarray], profile: GameProfile) -> None:
+    """Add one honest player of a :data:`SOLO_HONEST` archetype."""
+    if kind == "roamer":
+        world.add_player(Roamer(speed_mps=_speed(world)), archetype=kind, join_at=_join_time(world))
+    elif kind == "waterhole":
+        world.add_player(
+            Roamer(speed_mps=_speed(world), pois=pois, poi_bias=0.9), archetype=kind, join_at=_join_time(world)
+        )
+    elif kind == "camper":
+        camper = Roamer(speed_mps=_speed(world), pois=pois, poi_bias=0.8, pause_s=(300.0, 900.0))
+        world.add_player(camper, archetype=kind, join_at=_join_time(world))
+    elif kind == "hunter":
+        cls = _dino_class(world)
+        hunter = Hunter(awareness_m=profile.awareness_m(cls), speed_mps=_speed(world), pois=pois, poi_bias=0.3)
+        world.add_player(hunter, archetype=kind, join_at=_join_time(world), dino_class=cls)
+    else:
+        raise ValueError(f"unknown solo honest archetype: {kind}")
+
+
+def _add_cheater(world: World, kind: str, profile: GameProfile) -> None:
+    cls = _dino_class(world)
+    behaviour = CHEATER_BEHAVIOURS[kind](_speed(world), profile.awareness_m(cls))
+    world.add_player(behaviour, archetype=kind, join_at=_join_time(world), dino_class=cls)
+
+
+def clan_world(
+    seed: int,
+    *,
+    clans: int = 2,
+    clan_size: tuple[int, int] = (6, 10),
+    include_ptera: bool = True,
+    esp_in_clan: bool = True,
+    solo_honest: tuple[str, ...] = ("roamer",) * 5 + ("waterhole",) * 4 + ("camper",) * 2 + ("hunter",) * 3,
+    solo_cheaters: tuple[str, ...] = ("beeline_cheater",),
+    half_size_m: float = 3000.0,
+    profile: GameProfile | None = None,
+) -> World:
+    """
+    A server with rival clans, solo honest players and solo cheaters.
+
+    Each clan (team id ``clan-<i>``) has a random size in ``clan_size`` and mixed species. Its members start spread
+    over the map (about a third next to a teammate, the rest alone), share a base where they regroup every 20-40
+    minutes, and call every stranger they see; about 40% of them (at least one) are hunters who respond to calls
+    (``clan_hunter``), the others only roam and call (``clan_member``). The first clan gets a Pteranodon spotter
+    (``clan_spotter``) if ``include_ptera``; the last clan gets a member who calls and hunts targets it knows about
+    only through ESP (``clan_esp``, a cheater) if ``esp_in_clan``. These special members count towards the clan
+    size. Ground truth teams: :func:`teams`; the clan objects: :func:`clans`.
+
+    :param seed: rng seed
+    :param clans: number of rival clans
+    :param clan_size: inclusive range of the number of members per clan
+    :param include_ptera: give the first clan a Pteranodon spotter
+    :param esp_in_clan: give the last clan an ESP-using member
+    :param solo_honest: archetypes from :data:`SOLO_HONEST` to add, one player each
+    :param solo_cheaters: archetypes from :data:`CHEATERS` to add, one player each
+    :param half_size_m: half the map width
+    :param profile: game profile for per-class awareness
+    :return: the world, at time 0
+    :raises ValueError: for an unknown archetype or an invalid clan size
+    """
+    profile = profile or load_profile()
+    unknown = (set(solo_cheaters) - set(CHEATER_BEHAVIOURS)) | (set(solo_honest) - set(SOLO_HONEST))
+    if unknown:
+        raise ValueError(f"unknown archetype(s): {sorted(unknown)}")
+    if not 2 <= clan_size[0] <= clan_size[1]:  # noqa: PLR2004
+        raise ValueError(f"invalid clan size range: {clan_size}")
+    world = World(half_size_m=half_size_m, seed=seed, death_rate_per_s=1 / 1500)
+    pois = [world.random_point(margin_m=600.0) for _ in range(4)]
+
+    bases: list[np.ndarray] = []
+    for c in range(clans):
+        base = _clan_base(world, bases)
+        bases.append(base)
+        clan = Clan(f"clan-{c}", base, rng=np.random.default_rng(int(world.rng.integers(2**32))))
+        size = int(world.rng.integers(clan_size[0], clan_size[1] + 1))
+        roles = ["member"] * size
+        n_hunters = max(1, round(0.4 * size))
+        roles[:n_hunters] = ["hunter"] * n_hunters
+        if include_ptera and c == 0:
+            roles[-1] = "spotter"
+        if esp_in_clan and c == clans - 1:
+            roles[0] = "esp"
+        members: list[SimPlayer] = []
+        for role in roles:
+            members.append(_add_clan_member(world, clan, role, members, pois, profile))
+    for kind in solo_honest:
+        _add_solo_honest(world, kind, pois, profile)
+    for kind in solo_cheaters:
+        _add_cheater(world, kind, profile)
+    return world
+
+
+def _clan_base(world: World, bases: list[np.ndarray]) -> np.ndarray:
+    """A base for a new clan, a map half-width from the other clans' bases if a few tries find such a spot."""
+    base = world.random_point(margin_m=800.0)
+    for _ in range(50):
+        if all(float(np.hypot(*(base - b))) >= world.half_size_m for b in bases):
+            break
+        base = world.random_point(margin_m=800.0)
+    return base
+
+
+def _add_clan_member(
+    world: World, clan: Clan, role: str, members: list[SimPlayer], pois: list[np.ndarray], profile: GameProfile
+) -> SimPlayer:
+    """Add a clan member with ``role`` member, hunter, spotter (a Pteranodon) or esp."""
+    join_at = _join_time(world)
+    # Alone or in pairs: a third start next to a teammate, the others anywhere on the map.
+    near = members[int(world.rng.integers(len(members)))] if members and world.rng.random() < 1 / 3 else None
+    pos = near.pos + world.rng.normal(0.0, 20.0, size=2) if near is not None else world.random_point()
+    if role == "spotter":
+        cls = PTERANODON
+        behaviour: Behaviour = ClanMember(
+            clan,
+            awareness_m=profile.awareness_m(cls),
+            speed_mps=float(world.rng.uniform(12.0, 15.0)),
+            pause_s=(5.0, 30.0),
+        )
+    else:
+        cls = _dino_class(world)
+        member = EspClanMember if role == "esp" else ClanMember
+        behaviour = member(
+            clan,
+            awareness_m=profile.awareness_m(cls),
+            hunter=role in ("hunter", "esp"),
+            speed_mps=_speed(world),
+            pois=pois,
+            poi_bias=0.3,
+        )
+    return world.add_player(
+        behaviour, archetype=f"clan_{role}", pos=pos, dino_class=cls, join_at=join_at, team=clan.name
+    )
 
 
 def _dino_class(world: World) -> str:
@@ -133,3 +271,27 @@ def archetypes(world: World) -> dict[str, str]:
     :return: player id -> archetype
     """
     return {p.player_id: p.archetype for p in world.players}
+
+
+def teams(world: World) -> dict[str, str | None]:
+    """
+    The (hidden) team of every player, for evaluation.
+
+    :param world: the world
+    :return: player id -> team id, None for solo players
+    """
+    return {p.player_id: p.team for p in world.players}
+
+
+def clans(world: World) -> dict[str, Clan]:
+    """
+    The shared state of every clan in the world (calls, responses, kills, regroups), for tests and statistics.
+
+    :param world: the world
+    :return: team id -> clan
+    """
+    found: dict[str, Clan] = {}
+    for p in world.players:
+        if isinstance(p.behaviour, ClanMember):
+            found[p.behaviour.clan.name] = p.behaviour.clan
+    return found
