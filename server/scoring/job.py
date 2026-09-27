@@ -26,6 +26,7 @@ from server.orgconfig import OrgConfig
 from server.scoring.combine import OrgEvidence, PlayerScore, extract_evidence, score_evidence
 from server.scoring.config import ScoringConfig
 from server.scoring.game import GameProfile, load_profile
+from server.scoring.teams import Pair, PairEvidence
 from server.scoring.trajectories import Trajectories, from_frame
 
 logger = logging.getLogger(__name__)
@@ -100,9 +101,12 @@ def score_org_windows(
         return result
 
     active: set[str] = set()
+    horizon = timedelta(days=cfg.horizon_days)
     while start + window <= now - lag and result.windows < MAX_WINDOWS_PER_RUN:
         end = start + window
-        ev = window_evidence(repo, org_id, cfg, start, end, profiles=profiles)
+        # Clans are inferred from the whole horizon so far, plus this window's meetups.
+        prior = repo.load_pair_evidence(org_id, since=end - horizon)
+        ev = window_evidence(repo, org_id, cfg, start, end, profiles=profiles, prior_pairs=prior)
         repo.save_window(org_id, end, ev)
         active.update(ev.player_ids)
         result.windows += 1
@@ -126,6 +130,7 @@ def window_evidence(
     end: datetime,
     *,
     profiles: Mapping[str, GameProfile] | None = None,
+    prior_pairs: Mapping[Pair, PairEvidence] | None = None,
 ) -> OrgEvidence:
     """
     Extract one window's evidence from the database.
@@ -136,10 +141,12 @@ def window_evidence(
     :param start: window start
     :param end: window end
     :param profiles: game profile per server id
+    :param prior_pairs: pair meetups from earlier windows, for inferring clans
     :return: evidence counted inside ``[start, end)``
     """
     frame = repo.load_positions(org_id, start - timedelta(minutes=cfg.context_minutes), end)
-    return extract_evidence(to_trajectories(frame, cfg, profiles), cfg, count_from=start.timestamp())
+    trajectories = to_trajectories(frame, cfg, profiles)
+    return extract_evidence(trajectories, cfg, count_from=start.timestamp(), prior_pairs=prior_pairs)
 
 
 def to_trajectories(

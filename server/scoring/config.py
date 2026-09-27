@@ -39,6 +39,19 @@ class ScoringConfig(BaseModel):
     # (waterholes, trails) but breaks where they are *now*, which is what ESP reveals.
     null_shifts_s: tuple[Positive, ...] = (600.0, 1200.0, 1800.0)
 
+    # --- clans: players who keep meeting up are teammates (see teams.py) ---
+    team_meet_radius_m: Positive = 150.0  # a meetup: within this distance...
+    team_meet_min_s: Positive = 60.0  # ...for at least this long...
+    team_apart_m: Positive = 500.0  # ...after having been further apart than this (else it is the same meetup)
+    # A meeting after which one of them is dead (gone or respawned) within this long was a fight, not teamwork.
+    team_fight_grace_s: Positive = 120.0
+    # Real teammates meet again and again (z well above 10 over a session); chance meetings and hunts rarely pass
+    # this. Too lenient is not "safer": one wrong link merges whole clans and excuses everyone in them.
+    team_min_meets: Annotated[int, Field(ge=1)] = 3
+    team_link_z: float = 3.0
+    # Something a clanmate had in range counts as known to the whole clan for this long (voice chat).
+    team_shared_awareness_s: Positive = 180.0
+
     # --- beeline: heading straight for a player who was beyond awareness range, and arriving ---
     # Heading = displacement over the next this-many seconds. Short, because a pursuer's heading lags a target
     # that moves sideways.

@@ -17,6 +17,7 @@ import pandas as pd
 from server.db.database import Database, parse_ts, ts
 from server.scoring.combine import OrgEvidence, PlayerScore
 from server.scoring.features import AmbushEvidence, BeelineEvidence, SpawnEpisode
+from server.scoring.teams import Pair, PairEvidence
 
 OPEN = "open"
 FALSE_POSITIVE = "false_positive"
@@ -147,6 +148,11 @@ class ScoringRepository:
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 [(org_id, e.player_id, end, e.dino_class, e.duration_s, e.censored) for e in ev.episodes],
             )
+            conn.executemany(
+                "INSERT INTO pair_evidence (org_id, player_a, player_b, window_end, meets, null_meets)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [(org_id, a, b, end, pe.meets, pe.null_meets) for (a, b), pe in ev.pairs.items()],
+            )
             conn.execute(
                 "INSERT INTO scoring_state (org_id, processed_until) VALUES (?, ?)"
                 " ON CONFLICT (org_id) DO UPDATE SET processed_until = excluded.processed_until",
@@ -179,6 +185,22 @@ class ScoringRepository:
                     SpawnEpisode(row["player_id"], row["dino_class"], row["duration_s"], bool(row["censored"]))
                 )
         return ev
+
+    def load_pair_evidence(self, org_id: str, since: datetime) -> dict[Pair, PairEvidence]:
+        """
+        Pair meetups summed over windows ending after ``since``.
+
+        :param org_id: the org
+        :param since: horizon start
+        :return: evidence per pair
+        """
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT player_a, player_b, SUM(meets), SUM(null_meets) FROM pair_evidence"
+                " WHERE org_id = ? AND window_end > ? GROUP BY player_a, player_b",
+                (org_id, ts(since)),
+            ).fetchall()
+        return {(a, b): PairEvidence(int(meets), float(null)) for a, b, meets, null in rows}
 
     # --- scores and flags ---
 

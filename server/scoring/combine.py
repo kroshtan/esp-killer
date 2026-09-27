@@ -11,7 +11,7 @@ Sub-scores are combined with a weighted noisy-OR (see :class:`~server.scoring.co
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,8 +25,10 @@ from server.scoring.features import (
     ambush_evidence,
     associates,
     beeline_evidence,
+    null_shifts,
     spawn_episodes,
 )
+from server.scoring.teams import Pair, PairEvidence, infer_teams, pair_evidence, team_matrix
 from server.scoring.trajectories import Trajectories
 
 
@@ -73,6 +75,7 @@ class OrgEvidence:
     ambush: defaultdict[str, AmbushEvidence] = field(default_factory=lambda: defaultdict(AmbushEvidence))
     episodes: list[SpawnEpisode] = field(default_factory=list)
     servers: defaultdict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    pairs: defaultdict[Pair, PairEvidence] = field(default_factory=lambda: defaultdict(PairEvidence))
 
     def __add__(self, other: "OrgEvidence") -> "OrgEvidence":
         """Evidence for both periods (or servers); neither operand is modified."""
@@ -85,6 +88,8 @@ class OrgEvidence:
             result.episodes.extend(part.episodes)
             for player_id, servers in part.servers.items():
                 result.servers[player_id] |= servers
+            for pair, pe in part.pairs.items():
+                result.pairs[pair] += pe
         return result
 
     @property
@@ -98,24 +103,40 @@ class OrgEvidence:
 
 
 def extract_evidence(
-    trajectories: Sequence[Trajectories], config: ScoringConfig, count_from: float | None = None
+    trajectories: Sequence[Trajectories],
+    config: ScoringConfig,
+    count_from: float | None = None,
+    prior_pairs: Mapping[Pair, PairEvidence] | None = None,
 ) -> OrgEvidence:
     """
     Extract evidence from one window of an org's servers.
+
+    Clans are inferred first, from the meetups in this window plus ``prior_pairs`` (the rest of the horizon), so
+    that information shared inside a clan is not counted as evidence.
 
     :param trajectories: one per server, covering the window plus any leading context
     :param config: scoring config
     :param count_from: time (same clock as ``Trajectories.t``) from which evidence is counted; earlier data is
         context only. None counts everything.
-    :return: the window's evidence
+    :param prior_pairs: pair evidence from earlier windows of the horizon
+    :return: the window's evidence (its pair evidence covers this window only)
     """
     ev = OrgEvidence()
-    for tr in trajectories:
+    starts = [0 if count_from is None else int(np.searchsorted(tr.t, count_from)) for tr in trajectories]
+    for tr, start in zip(trajectories, starts, strict=True):
+        for pair, pe in pair_evidence(tr, config, null_shifts(tr, config), start).items():
+            ev.pairs[pair] += pe
+    all_pairs: defaultdict[Pair, PairEvidence] = defaultdict(PairEvidence, prior_pairs or {})
+    for pair, pe in ev.pairs.items():
+        all_pairs[pair] += pe
+    teams = infer_teams(all_pairs, config)
+
+    for tr, start in zip(trajectories, starts, strict=True):
         if len(tr.t) < 2:  # noqa: PLR2004
             continue
-        start = 0 if count_from is None else int(np.searchsorted(tr.t, count_from))
-        assoc = associates(tr, config)
-        for player_id, bee in beeline_evidence(tr, config, assoc, start).items():
+        team = team_matrix(tr, teams)
+        assoc = associates(tr, config) | team
+        for player_id, bee in beeline_evidence(tr, config, assoc, start, team=team).items():
             ev.beeline[player_id] += bee
         for player_id, amb in ambush_evidence(tr, config, assoc, start).items():
             ev.ambush[player_id] += amb

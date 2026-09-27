@@ -158,6 +158,19 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (org_id, server_id)
     );
     """,
+    # 4: meetups between pairs of players, per scoring window, from which clans are inferred (see teams.py).
+    """
+    CREATE TABLE pair_evidence (
+        org_id     TEXT NOT NULL,
+        player_a   TEXT NOT NULL,  -- the smaller id of the pair
+        player_b   TEXT NOT NULL,
+        window_end TEXT NOT NULL,
+        meets      INTEGER NOT NULL,
+        null_meets REAL NOT NULL,
+        PRIMARY KEY (org_id, player_a, player_b, window_end)
+    );
+    CREATE INDEX ix_pair_evidence_org_window ON pair_evidence (org_id, window_end);
+    """,
 ]
 
 

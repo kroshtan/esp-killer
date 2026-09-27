@@ -34,6 +34,7 @@ _TABLES = (
     ("ingested_snapshots", "captured_at", "positions_days"),
     ("evidence", "window_end", "evidence_days"),
     ("spawn_episodes", "window_end", "evidence_days"),
+    ("pair_evidence", "window_end", "evidence_days"),
     ("player_scores", "computed_at", "scores_days"),
     ("alerts", "created_at", "alerts_days"),
     ("flags", "updated_at", "flags_days"),
