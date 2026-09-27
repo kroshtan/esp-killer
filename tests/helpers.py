@@ -63,3 +63,8 @@ def track(player_id: str, points: list[tuple[float, float, float]], dino_class: 
     xs = np.interp(ts, [p[0] for p in points], [p[1] for p in points])
     ys = np.interp(ts, [p[0] for p in points], [p[2] for p in points])
     return pd.DataFrame({"t": ts, "player_id": player_id, "x": xs, "y": ys, "dino_class": dino_class})
+
+
+def killed(frame: pd.DataFrame, at: float) -> pd.DataFrame:
+    """A track that ends at ``at``: the player was killed (and is gone for the rest of the test)."""
+    return frame[frame["t"] <= at]

@@ -8,10 +8,10 @@ from server.db.database import Database
 from server.db.scoring import ScoringRepository
 from server.scoring.combine import OrgEvidence
 from server.scoring.config import ScoringConfig
-from server.scoring.features import associates, beeline_evidence
+from server.scoring.features import associates, beeline_evidence, tip_evidence
 from server.scoring.teams import PairEvidence, infer_teams, pair_evidence, pair_key, team_matrix
 from server.scoring.trajectories import from_frame
-from tests.helpers import track
+from tests.helpers import killed, track
 
 CFG = ScoringConfig(null_shifts_s=(600.0,))
 
@@ -72,14 +72,15 @@ def scouted_hunt(scout_sees_first: bool) -> tuple[int, int]:
     A ground hunter walks straight to a prey 1.2 km away; a clanmate scout passes within 100 m of the prey either
     before the hunter sets off or only after.
     """
-    prey = track("prey", [(0, 1200, 0), (900, 1200, 0)])
+    prey = killed(track("prey", [(0, 1200, 0), (900, 1200, 0)]), at=310)  # killed on arrival
     hunter = track(
         "hunter", [(0, 0, 0), (100, 0, 0), (300, 1150, 0), (360, 1150, 0), (500, 1150, 900), (900, 1150, 900)]
     )
-    scout_at = 20 if scout_sees_first else 250
-    scout = track(
-        "scout", [(0, 0, -2000), (scout_at, 1200, -100), (scout_at + 40, 1200, -100), (900, 3000, -2000)], "Troodon"
-    )
+    if scout_sees_first:
+        scout = track("scout", [(0, 0, -2000), (20, 1200, -100), (60, 1200, -100), (900, 3000, -2000)], "Troodon")
+    else:
+        # Joins the server next to the prey only after the hunter has lined up, so it was not heading there first.
+        scout = track("scout", [(250, 1200, -100), (290, 1200, -100), (900, 3000, -2000)], "Troodon")
     tr = from_frame(pd.concat([prey, hunter, scout], ignore_index=True), "srv", CFG)
     assoc = associates(tr, CFG)
     alone = beeline_evidence(tr, CFG, assoc)["hunter"].episodes
@@ -116,3 +117,42 @@ def test_pair_evidence_is_stored_per_window_and_summed(tmp_path: Path) -> None:
     assert repo.load_pair_evidence("org", since=start) == {("a", "b"): PairEvidence(6, 1.0)}
     assert repo.load_pair_evidence("org", since=start + timedelta(hours=3)) == {("a", "b"): PairEvidence(3, 0.5)}
     assert np.isclose(PairEvidence(6, 1.0).z(), 5 / np.sqrt(2))
+
+
+def test_joining_a_clanmates_hunt_is_a_relay() -> None:
+    # The leader heads for a prey 1.2 km away (its own evidence); a clanmate lines up on the same prey a little later.
+    prey = killed(track("prey", [(0, 1200, 0), (900, 1200, 0)]), at=320)  # killed by the leader
+    leader = track("leader", [(0, 0, -300), (300, 1150, -50), (360, 1150, -50), (500, 1150, -900), (900, 1150, -900)])
+    follower = track("follower", [(0, 0, 300), (60, 0, 300), (310, 1150, 50), (420, 1150, 50), (900, 1150, 900)])
+    tr = from_frame(pd.concat([prey, leader, follower], ignore_index=True), "srv", CFG)
+    team = team_matrix(tr, {"leader": 0, "follower": 0})
+    evidence = beeline_evidence(tr, CFG, associates(tr, CFG) | team, team=team)
+    assert evidence["leader"].episodes == 1
+    assert evidence["follower"].episodes == 0
+
+
+def test_tips_count_approaches_to_what_someone_else_saw() -> None:
+    # Three times, the scout sees a prey and the hunter then walks straight to it from far away.
+    tracks = []
+    for n, t0 in enumerate((0, 1000, 2000)):
+        x = 2000 * n
+        tracks.append(track(f"prey{n}", [(t0, x + 1200, 0), (t0 + 900, x + 1200, 0)]))
+    scout_points: list[tuple[float, float, float]] = [
+        (0, 1200, -250)
+    ]  # spots each prey from 250 m (not travelling with it)
+    hunter_points: list[tuple[float, float, float]] = [(0, 0, 0)]
+    for n, t0 in enumerate((0, 1000, 2000)):
+        x = 2000 * n
+        scout_points += [(t0 + 10, x + 1200, -250), (t0 + 60, x + 1200, -250)]
+        hunter_points += [
+            (t0 + 100, x, 0),
+            (t0 + 300, x + 1150, 0),
+            (t0 + 400, x + 1150, 600),
+            (t0 + 999, x + 2000, 0),
+        ]
+    tracks += [track("scout", scout_points), track("hunter", hunter_points)]
+    tr = from_frame(pd.concat(tracks, ignore_index=True), "srv", CFG)
+    tips = tip_evidence(tr, CFG, associates(tr, CFG), [tr.steps(600)])
+    ev = tips[pair_key("hunter", "scout")]
+    assert ev.tips >= 3
+    assert ev.tips > ev.null_tips

@@ -30,21 +30,26 @@ tests/     unit, integration and end-to-end tests
 
 ## How scoring works
 
+The guiding principle: **a false flag punishes a fair player, a missed cheater is caught later.**
+
 Three behaviours are counted per player: **beelines** (lining up on someone out of sight and staying lined up
-until they come into range), **ambushes** (a wait that ends with the arrival of someone who was out of range when
-it began) and **time to contact** after spawning.
+until they come into range), **ambushes** (a wait during which someone who was out of range arrives and is killed)
+and **time to contact** after spawning. An approach does not count if anything else explains it: the player saw
+the target recently, **anyone else had it in view shortly before** (a clanmate, a scout, a friend on voice chat),
+a clanmate was already hunting it, or it ended in a peaceful reunion. What remains is heading straight for someone
+nobody could see, such as a lone clan member picked off far from anyone. Clans, mixed species included, are
+inferred from behaviour (players who keep meeting up or tipping each other off), because the game exposes no group
+data.
 
 Each behaviour is compared with a *time-shifted null*: the same statistic computed against every other player's
-trajectory shifted by 10–30 minutes. That keeps where people go (waterholes, trails) and removes only where they
-are right now, which is exactly what an honest player can't know about someone out of sight. Evidence is counted
-per 2-hour window and summed over a week, so it grows with a cheater's playing time and not with an honest
-player's. Legitimate reactions (a hunter charging someone it can see) don't count: evidence stops once the target
-is in sight.
+trajectory shifted by 10–30 minutes. That keeps where people go (waterholes, trails, bases) and removes only where
+they are right now. Evidence is counted per 2-hour window and summed over a week, so it grows with a cheater's
+playing time and not with an honest player's.
 
-On simulated servers (12 servers × 6 hours, 23 honest players and 3 cheaters each, seeds not used for tuning),
-every full-time cheater was flagged after 6 hours, a part-time cheater (ESP 40% of the time) in 67% of cases, and
-1 of 276 honest players was flagged. Simulation is not reality: real thresholds need tuning on real servers with
-admin feedback. [NOTES.md](NOTES.md#scoring-phase-2) has the method, the evaluation and the limitations.
+On simulated servers (24 servers × 6 hours, including servers with rival clans hunting on each other's calls;
+seeds not used for tuning), **no honest player was flagged** (0 of 616), while full-time cheaters clearly stood out
+(AUC 0.87–1.00; 42–100% already flagged after 6 hours). Simulation is not reality: real thresholds need tuning on
+real servers with admin feedback. [NOTES.md](NOTES.md#scoring) has the method, the evaluation and the limitations.
 
 ## Server owner guide
 

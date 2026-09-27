@@ -177,7 +177,7 @@ def clan_world(
             roles[0] = "esp"
         members: list[SimPlayer] = []
         for role in roles:
-            members.append(_add_clan_member(world, clan, role, members, pois, profile))
+            members.append(_add_clan_member(world, clan, role, members=members, pois=pois, profile=profile))
     for kind in solo_honest:
         _add_solo_honest(world, kind, pois, profile)
     for kind in solo_cheaters:
@@ -196,7 +196,7 @@ def _clan_base(world: World, bases: list[np.ndarray]) -> np.ndarray:
 
 
 def _add_clan_member(
-    world: World, clan: Clan, role: str, members: list[SimPlayer], pois: list[np.ndarray], profile: GameProfile
+    world: World, clan: Clan, role: str, *, members: list[SimPlayer], pois: list[np.ndarray], profile: GameProfile
 ) -> SimPlayer:
     """Add a clan member with ``role`` member, hunter, spotter (a Pteranodon) or esp."""
     join_at = _join_time(world)

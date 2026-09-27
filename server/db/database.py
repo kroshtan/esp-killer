@@ -171,6 +171,11 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX ix_pair_evidence_org_window ON pair_evidence (org_id, window_end);
     """,
+    # 5: tips (information flow) as a second clan signal.
+    """
+    ALTER TABLE pair_evidence ADD COLUMN tips INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE pair_evidence ADD COLUMN null_tips REAL NOT NULL DEFAULT 0;
+    """,
 ]
 
 

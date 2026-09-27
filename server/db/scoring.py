@@ -149,9 +149,13 @@ class ScoringRepository:
                 [(org_id, e.player_id, end, e.dino_class, e.duration_s, e.censored) for e in ev.episodes],
             )
             conn.executemany(
-                "INSERT INTO pair_evidence (org_id, player_a, player_b, window_end, meets, null_meets)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                [(org_id, a, b, end, pe.meets, pe.null_meets) for (a, b), pe in ev.pairs.items()],
+                "INSERT INTO pair_evidence"
+                " (org_id, player_a, player_b, window_end, meets, null_meets, tips, null_tips)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (org_id, a, b, end, pe.meets, pe.null_meets, pe.tips, pe.null_tips)
+                    for (a, b), pe in ev.pairs.items()
+                ],
             )
             conn.execute(
                 "INSERT INTO scoring_state (org_id, processed_until) VALUES (?, ?)"
@@ -196,11 +200,14 @@ class ScoringRepository:
         """
         with self.db.connect() as conn:
             rows = conn.execute(
-                "SELECT player_a, player_b, SUM(meets), SUM(null_meets) FROM pair_evidence"
+                "SELECT player_a, player_b, SUM(meets), SUM(null_meets), SUM(tips), SUM(null_tips) FROM pair_evidence"
                 " WHERE org_id = ? AND window_end > ? GROUP BY player_a, player_b",
                 (org_id, ts(since)),
             ).fetchall()
-        return {(a, b): PairEvidence(int(meets), float(null)) for a, b, meets, null in rows}
+        return {
+            (a, b): PairEvidence(int(meets), float(null_meets), int(tips), float(null_tips))
+            for a, b, meets, null_meets, tips, null_tips in rows
+        }
 
     # --- scores and flags ---
 

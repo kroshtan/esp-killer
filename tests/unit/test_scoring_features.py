@@ -12,7 +12,7 @@ from server.scoring.features import (
     spawn_episodes,
 )
 from server.scoring.trajectories import Trajectories, from_frame
-from tests.helpers import DT, track
+from tests.helpers import DT, killed, track
 
 # A short null shift so 20-minute test tracks have a null at all.
 CFG = ScoringConfig(null_shifts_s=(300.0,), near_lookback_s=60.0)
@@ -55,17 +55,19 @@ def test_pursuing_a_moving_player_out_of_range_is_a_beeline() -> None:
     pos = np.zeros(2)
     hx, hy = [], []
     caught = False
+    caught_at = ts[-1]
     for t in ts:
         hx.append(pos[0])
         hy.append(pos[1])
         goal = np.array([1000.0, 3.0 * t])
         step = goal - pos
         dist = float(np.hypot(*step))
-        caught = caught or dist < 30
+        if not caught and dist < 30:
+            caught, caught_at = True, t
         if not caught:  # after the kill the hunter stays put and the target walks on (so they are not a group)
             pos = pos + step / dist * min(6.0 * DT, dist)
     hunter = pd.DataFrame({"t": ts, "player_id": "hunter", "x": hx, "y": hy, "dino_class": "Troodon"})
-    episodes, null = beeline(world(hunter, target))
+    episodes, null = beeline(world(hunter, killed(target, at=caught_at + 10)))
     assert episodes == 1
     assert null == 0  # the time-shifted target is somewhere else
 
@@ -73,7 +75,8 @@ def test_pursuing_a_moving_player_out_of_range_is_a_beeline() -> None:
 def test_walking_to_a_resting_player_is_explained_by_the_null() -> None:
     # The target never moves: shifting it in time changes nothing, so it is no evidence of knowing where it is.
     resting = track("resting", [(0, 1500, 0), (1200, 1500, 0)])
-    walker = track("hunter", [(0, 0, 0), (250, 1500, 0), (300, 1500, 0), (500, 1500, 1200), (1200, 1500, 1200)])
+    # Walks straight there and straight on (no lingering, so not a reunion).
+    walker = track("hunter", [(0, 0, 0), (250, 1500, 0), (450, 1500, 1200), (1200, 1500, 1200)])
     episodes, null = beeline(world(walker, resting))
     assert episodes == 1
     assert null == 1
@@ -109,7 +112,7 @@ def test_group_mates_are_never_targets() -> None:
 
 
 def test_episodes_before_the_window_start_are_context_only() -> None:
-    resting = track("resting", [(0, 1500, 0), (1200, 1500, 0)])
+    resting = killed(track("resting", [(0, 1500, 0), (1200, 1500, 0)]), at=260)  # killed on arrival
     walker = track("hunter", [(0, 0, 0), (250, 1500, 0), (300, 1500, 0), (500, 1500, 1200), (1200, 1500, 1200)])
     tr = world(walker, resting)
     assert beeline(tr, start=int(np.searchsorted(tr.t, 600)))[0] == 0
@@ -119,7 +122,13 @@ def test_waiting_where_a_distant_player_arrives_is_an_ambush_hit() -> None:
     # The waiter walks in, waits at the origin from t=180 to t=330, then leaves; the passer arrives at t=240. In
     # the null the passer arrives 300 s later, after the waiter has gone.
     waiter = track("waiter", [(0, -1000, -1000), (180, 0, 0), (330, 0, 0), (600, 2000, 2000), (1200, 2000, 2000)])
-    passer = track("passer", [(0, 1500, 0), (240, 0, 0), (600, -2000, 0), (1200, -2000, 0)])
+    # The passer walks into the waiter at t=240 and is killed (gone, then respawned far away).
+    passer = pd.concat(
+        [
+            track("passer", [(0, 1500, 0), (240, 0, 0), (270, 0, 0)]),
+            track("passer", [(400, -3000, 0), (1200, -3000, 0)]),
+        ]
+    )
     ev = ambush_evidence(world(waiter, passer), CFG, np.zeros((2, 2), dtype=bool))["waiter"]
     assert (ev.waits, ev.hits) == (2, 1)  # the second wait is standing still at the end, where nobody comes
     assert ev.null_hits == 0
@@ -149,3 +158,17 @@ def test_respawn_by_teleport_starts_a_new_episode() -> None:
     )
     episodes = spawn_episodes(from_frame(frame, "srv", CFG), CFG, np.zeros((2, 2), dtype=bool))
     assert [e.player_id for e in episodes] == ["p", "p"]
+
+
+def test_an_arrival_without_a_kill_is_not_an_ambush() -> None:
+    waiter = track("waiter", [(0, -1000, -1000), (180, 0, 0), (330, 0, 0), (600, 2000, 2000), (1200, 2000, 2000)])
+    passer = track("passer", [(0, 1500, 0), (240, 0, 0), (600, -2000, 0), (1200, -2000, 0)])  # walks on, alive
+    ev = ambush_evidence(world(waiter, passer), CFG, np.zeros((2, 2), dtype=bool))["waiter"]
+    assert ev.hits == 0
+
+
+def test_walking_straight_to_a_friend_and_staying_is_a_reunion() -> None:
+    # The friend moves about, far away; the player walks straight to them and they stay together.
+    friend = track("friend", [(0, 1500, 0), (600, 1500, 1500), (1200, 1500, 1500)])
+    hunter = track("hunter", [(0, 0, 0), (60, 0, 0), (400, 1500, 1400), (1200, 1500, 1450)])
+    assert beeline(world(hunter, friend))[0] == 0

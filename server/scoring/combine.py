@@ -27,6 +27,7 @@ from server.scoring.features import (
     beeline_evidence,
     null_shifts,
     spawn_episodes,
+    tip_evidence,
 )
 from server.scoring.teams import Pair, PairEvidence, infer_teams, pair_evidence, team_matrix
 from server.scoring.trajectories import Trajectories
@@ -124,28 +125,43 @@ def extract_evidence(
     ev = OrgEvidence()
     starts = [0 if count_from is None else int(np.searchsorted(tr.t, count_from)) for tr in trajectories]
     for tr, start in zip(trajectories, starts, strict=True):
-        for pair, pe in pair_evidence(tr, config, null_shifts(tr, config), start).items():
-            ev.pairs[pair] += pe
+        _add_pair_evidence(ev, tr, config, start)
     all_pairs: defaultdict[Pair, PairEvidence] = defaultdict(PairEvidence, prior_pairs or {})
     for pair, pe in ev.pairs.items():
         all_pairs[pair] += pe
     teams = infer_teams(all_pairs, config)
-
     for tr, start in zip(trajectories, starts, strict=True):
-        if len(tr.t) < 2:  # noqa: PLR2004
-            continue
-        team = team_matrix(tr, teams)
-        assoc = associates(tr, config) | team
-        for player_id, bee in beeline_evidence(tr, config, assoc, start, team=team).items():
-            ev.beeline[player_id] += bee
-        for player_id, amb in ambush_evidence(tr, config, assoc, start).items():
-            ev.ambush[player_id] += amb
-        ev.episodes.extend(spawn_episodes(tr, config, assoc, start))
-        present = tr.present[start:].any(axis=0)
-        for p, player_id in enumerate(tr.player_ids):
-            if present[p]:
-                ev.servers[player_id].add(tr.server_id)
+        _add_behaviour_evidence(ev, tr, config, start, teams)
     return ev
+
+
+def _add_pair_evidence(ev: OrgEvidence, tr: Trajectories, config: ScoringConfig, start: int) -> None:
+    if len(tr.t) < 2:  # noqa: PLR2004
+        return
+    shifts = null_shifts(tr, config)
+    for pair, pe in pair_evidence(tr, config, shifts, start).items():
+        ev.pairs[pair] += pe
+    for pair, pe in tip_evidence(tr, config, associates(tr, config), shifts, start).items():
+        ev.pairs[pair] += pe
+
+
+def _add_behaviour_evidence(
+    ev: OrgEvidence, tr: Trajectories, config: ScoringConfig, start: int, teams: Mapping[str, int]
+) -> None:
+    if len(tr.t) < 2:  # noqa: PLR2004
+        return
+    team = team_matrix(tr, teams)
+    assoc = associates(tr, config) | team  # clanmates are never targets
+    bee = beeline_evidence(tr, config, assoc, start, team=team, anyone_sighting=config.explain_by_any_spotter)
+    for player_id, b in bee.items():
+        ev.beeline[player_id] += b
+    for player_id, amb in ambush_evidence(tr, config, assoc, start).items():
+        ev.ambush[player_id] += amb
+    ev.episodes.extend(spawn_episodes(tr, config, assoc, start))
+    present = tr.present[start:].any(axis=0)
+    for p, player_id in enumerate(tr.player_ids):
+        if present[p]:
+            ev.servers[player_id].add(tr.server_id)
 
 
 def score_evidence(

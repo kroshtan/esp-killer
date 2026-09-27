@@ -41,71 +41,99 @@ To settle what remains, run `espk-agent capture -c agent.toml` against a live se
 via SteamCMD works). It writes raw responses to `captures/`. Those contain player names, ids and positions:
 check them, add anonymised copies to `tests/fixtures/rcon/`, then delete them.
 
-## Scoring (phase 2)
+## Scoring
+
+### Priority
+
+**A false flag punishes a fair player; a missed cheater is caught later.** Every rule below leans that way: when
+something could be legitimate, it does not count as evidence. Cheaters then need more playing time to be flagged,
+which the week-long evidence horizon provides.
 
 ### Method
 
-Positions are resampled per server onto a 5 s grid (`server/scoring/trajectories.py`). Three behaviours are
-turned into **counts** per player (`server/scoring/features.py`):
+Positions are resampled per server onto a 5 s grid (`server/scoring/trajectories.py`), with each player's
+awareness range at each moment from their class (`game/evrima.yaml`). Three behaviours become **counts** per
+player (`server/scoring/features.py`):
 
-- **Beeline:** the player lines up on someone who is out of sight (beyond `awareness_m`, and not within it for the
-  last 5 minutes) and stays lined up until that player comes into range. Evidence stops at sighting, because
-  whatever happens after that (a charge, a fight) is legitimate. Excluded: the target coming to the player (head-on
-  meetings, being hunted), the player already heading that way before the target was in their path (walking into
-  an ambush, or up to someone resting on their route), and group mates (pairs who spent 10+ minutes together).
-- **Ambush:** a wait of at least a minute that ends with the arrival of someone who was out of range when it began.
+- **Beeline:** the player lines up on someone out of their range, and stays lined up until that player comes into
+  range. Evidence stops at sighting: whatever happens after (a charge, a fight) is legitimate. It does not count
+  if the approach is explained some other way:
+  - the target was within the player's range in the last 5 minutes;
+  - **anyone else had the target within their own range shortly before** (3 minutes): a clanmate, a scout, a
+    friend on voice chat, whether or not we know they are a team. What remains is heading straight for a player
+    nobody could see, such as a lone clan member picked off far from anyone;
+  - a clanmate was already heading for the target (joining a hunt; the evidence stays with whoever started it);
+  - the player was already heading that way before (the target stepped into their path), or the target came to
+    the player (head-on meetings, being hunted);
+  - it ended in a **peaceful reunion** (together within 150 m for a minute soon after, nobody dying): walking
+    straight to a friend is meeting up, not hunting.
+- **Ambush:** a wait of at least a minute during which someone who was out of range arrives **and dies shortly
+  after**. An ambush is an attack; arrivals without a kill (regroups, passers-by) say nothing.
 - **Time to contact:** from each spawn to first contact, ranked against the org's other spawns of the same class.
 
-Beeline and ambush counts are compared with a **time-shifted null**: the same statistic computed against every
-other trajectory shifted by 10, 20 and 30 minutes. The shift keeps where people go (waterholes, trails) and breaks
-only where they are *now*, which is the one thing an honest player cannot know about someone out of sight. The
-evidence is the count z-score `(observed − null) / √(null + 1)`. For time to contact it is the z-score of the mean
-rank, which is uniform under the null.
+Beeline and ambush counts are compared with a **time-shifted null**: the same statistic computed with every other
+trajectory shifted by 10, 20 and 30 minutes. That keeps where people go (waterholes, trails, bases) and breaks only
+where they are *now*, which is what an honest player cannot know about someone out of sight. The evidence is the
+count z-score `(observed − null) / √(null + 1)`; for time to contact, the z-score of the mean rank.
 
-Counts are **additive**. Each scoring run processes complete 2-hour windows (with 30 minutes of leading context
-that is not counted), stores each player's counts, and scores from the sum over the last 7 days. A cheater's excess
-over the null grows with playing time and an honest player's does not, which is where the power comes from. Each
-z becomes a sub-score that rises from 0 at z = 2 to 1 at z = 6 (3.5 for time to contact). They are combined with a
-weighted noisy-OR: beeline 1.0, ambush 0.9, time to contact 0.35. So time to contact alone (fast, aggressive
-honest players) can never cross the 0.6 flag threshold.
+**Clans** (`server/scoring/teams.py`) are inferred from behaviour, since the game exposes no group data: pairs of
+players who keep meeting up (separate meetings, not ending in a death) or keep heading for players the other had
+just spotted, far more often than the null explains, are linked; connected players form a clan (any species, any
+size, spread out or not). Clanmates are never beeline targets, and a clanmate already hunting a target makes
+joining in a relay. Linking needs clear, repeated evidence (3+ meetups or tips, z ≥ 3): too lenient a rule chains
+strangers into one giant clan and excuses everyone in it. With "anyone's sighting explains" doing most of the work,
+clan inference only needs to be right about who never counts as a target.
+
+Counts are **additive**: each scoring run processes complete 2-hour windows (plus 30 minutes of context), stores
+per-player and per-pair counts, and scores from the sum over the last 7 days. A cheater's excess over the null
+grows with playing time; an honest player's does not. Sub-scores rise from 0 at z = 2 to 1 at z = 6 for beelines,
+4 to 8 for ambushes (without kill logs we cannot tell who killed the arriving player, so defending a base looks
+like an ambush at z up to ~5; real ambushers are at 20+), and 1 to 3.5 for time to contact. They are combined with
+a weighted noisy-OR (beeline 1.0, ambush 0.9, time to contact 0.35), so time to contact alone never flags anyone.
 
 ### Evaluation on simulated servers
 
-`python -m tools.sim.evaluate --seeds 12 --first-seed 500 --hours 6`: 12 servers × 6 hours, each with 23 honest
-players (roamers, waterhole regulars, campers, hunters who chase anyone they see, groups who regroup over voice
-chat) and three cheaters. The thresholds were tuned on seeds 100–107; these seeds were not used for tuning.
+`python -m tools.sim.evaluate --seeds 12 --first-seed 500 --hours 6` (mixed servers: 23 honest players of five
+kinds, plus three cheaters) and `--clans --seeds 12 --first-seed 700` (two rival clans of 6-10 mixed-species
+members who spread out, call sightings over "voice", hunt on each other's calls from 1-2 km away and regroup at a
+base; one clan has a Pteranodon spotter, the other an ESP member; plus solo players and a solo cheater). Evidence
+accumulated over 6 hours per server:
 
-| | first 2 h window | accumulated over 6 h |
+| | mixed servers | clan servers |
 |---|---|---|
-| beeline cheater: AUC vs honest / flagged | 1.00 / 67% | **1.00 / 100%** |
-| ambush cheater | 0.95 / 83% | **1.00 / 100%** |
-| part-time cheater (ESP 40% of the time) | 0.61 / 8% | **0.82 / 25%** |
-| honest players flagged | 0 / 276 | **0 / 276** |
+| honest players flagged | **0 / 276** (highest score 0.37) | **0 / 340** (highest 0.49) |
+| full-time beeline cheater: flagged / AUC | 58% / 0.98 | 42% / 0.87 |
+| ambush cheater | 100% / 1.00 | |
+| ESP member inside a clan | | 17% / 0.78 |
+| part-time cheater (ESP 40% of the time) | 25% / 0.68 | |
 
-The part-time cheater's numbers swing a lot between simulator versions (an earlier version gave 0.97 / 67% on the
-same seeds), because they depend on when its random ESP phases fall. Treat part-time cheating as detectable over
-longer play, not within a few hours.
+Without "anyone's sighting explains" and the reunion and kill rules, the same clan servers flagged 13 of 173 honest
+players, almost all clan hunters answering calls; the cheaters were caught more often (83-100%). That trade was
+made on purpose. Cheaters not flagged within 6 hours keep accumulating evidence over the week.
 
-Two things drove the design and are worth knowing when reading flags:
+Things worth knowing when reading flags:
 
-- **Cheaters create beelines for their victims.** Honest players "arrive" at a beeline cheater (it comes to them)
-  and walk straight into an ambusher (it stood on their route). Hence the target-approach and turn-onto-target
-  rules. Before those rules, a victim's beeline z grew as fast as some cheaters'.
+- **Cheaters create beelines for their victims.** Honest players "arrive" at a cheater who comes to them, or walk
+  into an ambusher on their route; the target-approach and turn-onto-target rules handle that.
 - **Legitimate reactions can't be reproduced by the null.** Nobody reacts to a time-shifted phantom, so anything
-  that follows a sighting (a hunter's charge) must not count as evidence. Hence evidence stops at sighting range.
+  after a sighting (a charge) is not evidence; hence evidence stops at sighting range.
+- **Honest players acting on an ESP user's calls** (a clan with a cheater relaying positions) do accumulate
+  evidence, because nobody could see those targets. The ESP user is usually the stronger signal; admins judge the
+  rest.
 
 ### Limitations
 
-- **Simulation is not reality.** The honest archetypes are my guess at the hard cases. Real thresholds should be
-  tuned on real servers with admin feedback (`mark-false-positive`, and bans once there is a way to record them).
-- **Latency.** A window is scored only once it is complete, plus a 5 minute lag, so a flag needs at least one full
-  2-hour window of play. Positions that arrive after their window was processed (an agent that was offline for
-  longer than the lag) are stored but never scored.
-- **Respawn detection** relies on gaps, teleports and class changes. A respawn inside a gap shorter than
-  `max_gap_s` (30 s) is interpolated over and missed.
-- **Awareness range is one number.** In the game it depends on class, terrain, calls and scent. Per-class values
-  are a natural next step.
-- **Streamers.** Following a streamer's broadcast position is information leakage too, and it will look the same.
+- **Simulation is not reality.** The honest archetypes, and the clans in particular, are guesses at how people play.
+  Real thresholds should be tuned with admin feedback (`mark-false-positive`).
+- **Crowded servers hide some cheating.** On a busy server a target is often within someone's view, which excuses a
+  cheater's approach to them; detection there relies on lone targets and more playing time.
+- **No kill attribution.** Deaths are inferred from players disappearing or respawning; who killed whom would make
+  the ambush and reunion rules sharper (the server log has kill lines; see "Game mechanics profiles").
+- **Latency.** A window is scored once complete plus a 5 minute lag, so a flag needs at least one full 2-hour
+  window of play. Positions arriving after their window was processed are stored but never scored.
+- **Respawn detection** relies on gaps, teleports and class changes; a respawn inside a gap shorter than 30 s is
+  interpolated over and missed.
+- **Streamers.** Following a streamer's broadcast position is information leakage too, and looks the same.
 - **Scoring config is global** (the `scoring:` section of config.yaml), not per org.
 
 ## Game mechanics profiles
@@ -115,13 +143,12 @@ Two things drove the design and are worth knowing when reading flags:
 public so players can correct it. Servers pick a profile in config.yaml (`game_profile`, default `evrima`); a
 modded server gets its own file that `extends: evrima` and overrides what differs.
 
-- **Only the Pteranodon differs** (sees ~900 m from the air). On identical simulated servers, per-class guesses
-  for ground classes (250-350 m) performed no better than one 300 m range for everyone, so they were dropped.
-- **Groups and calls are documented but not used.** Neither RCON nor the server log reports group membership or
-  calls. In-game groups are same-species only, so a Pteranodon scouting for ground carnivores is informal teaming,
-  which is for admins to judge; the detector does not excuse it. The server log's chat lines carry a
-  `[GROUP-<id>]` tag that looks like the sender's group id (unconfirmed); if it holds up, group members could share
-  awareness.
+- **Only the Pteranodon differs** (sees ~900 m from the air; how scouts actually play is still being asked). On
+  identical simulated servers, per-class guesses for ground classes performed no better than one 300 m range.
+- **Groups and calls are not read from the game.** Neither RCON nor the server log reports group membership or
+  calls, so clans are inferred from behaviour (see Scoring), mixed species included. The server log's chat lines
+  carry a `[GROUP-<id>]` tag that looks like the sender's in-game group id (unconfirmed), and kill lines name killer
+  and victim; both could sharpen the inference later.
 - **Modded servers matter.** Asura's companion platform, for example, shows a live map and lets friends teleport,
   which changes what a player can legitimately know. Such a server needs its own profile.
 

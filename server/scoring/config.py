@@ -51,6 +51,14 @@ class ScoringConfig(BaseModel):
     team_link_z: float = 3.0
     # Something a clanmate had in range counts as known to the whole clan for this long (voice chat).
     team_shared_awareness_s: Positive = 180.0
+    # Treat everyone as a potential teammate for knowledge: an approach is explained if ANY other player spotted the
+    # target shortly before. Covers clans, scouts and informal teams without having to infer them; what remains as
+    # evidence is heading straight for someone nobody could see.
+    explain_by_any_spotter: bool = True
+
+    # A beeline that ends with the two peacefully together (within ``team_meet_radius_m`` for ``team_meet_min_s``,
+    # nobody dying) within this long of arriving was a reunion, not a hunt.
+    reunion_window_s: Positive = 300.0
 
     # --- beeline: heading straight for a player who was beyond awareness range, and arriving ---
     # Heading = displacement over the next this-many seconds. Short, because a pursuer's heading lags a target
@@ -100,8 +108,11 @@ class ScoringConfig(BaseModel):
     ambush_radius_m: Positive = 50.0
     ambush_grace_s: Positive = 30.0  # arrivals just after the wait ends still count
     ambush_min_waits: Annotated[int, Field(ge=1)] = 3
-    ambush_z_floor: float = 2.0  # count z-score (observed vs null hits): sub-score 0 at the floor, 1 at full
-    ambush_z_full: Positive = 6.0
+    # Count z-score (observed vs null hits): sub-score 0 at the floor, 1 at full. Higher than for beelines: without
+    # kill logs we cannot tell who killed the arriving player, so defending a base looks like an ambush (honest z up
+    # to ~5 on simulated clan servers); real ambushers score far higher (z 20+).
+    ambush_z_floor: float = 4.0
+    ambush_z_full: Positive = 8.0
 
     # --- combining ---
     # Noisy-OR: score = 1 - prod(1 - weight * sub_score). A strong signal in any one behaviour is enough, and

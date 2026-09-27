@@ -10,7 +10,7 @@ from server.scoring.config import ScoringConfig
 from server.scoring.features import associates, beeline_evidence
 from server.scoring.game import load_profile
 from server.scoring.trajectories import from_frame
-from tests.helpers import track
+from tests.helpers import killed, track
 from tests.unit.test_scoring_features import CFG
 
 BASE = """
@@ -85,7 +85,7 @@ def test_awareness_follows_the_class_at_each_moment() -> None:
 @pytest.mark.parametrize(("dino_class", "episodes"), [("Pteranodon", 0), ("Carnotaurus", 1)])
 def test_a_flyer_heading_for_someone_it_could_see_is_no_evidence(dino_class: str, episodes: int) -> None:
     # Straight to a resting player 800 m away, then off again. From the air that player was in sight.
-    resting = track("resting", [(0, 800, 0), (1200, 800, 0)])
+    resting = killed(track("resting", [(0, 800, 0), (1200, 800, 0)]), at=150)  # killed on arrival
     mover = track("mover", [(0, 0, 0), (140, 800, 0), (200, 800, 0), (400, 800, 1200), (1200, 800, 1200)], dino_class)
     tr = from_frame(pd.concat([mover, resting]), "srv", CFG, load_profile())
     evidence = beeline_evidence(tr, CFG, associates(tr, CFG))["mover"]

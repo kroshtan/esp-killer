@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from server.scoring.config import ScoringConfig
+from server.scoring.teams import Pair, PairEvidence, deaths, pair_key
 from server.scoring.trajectories import Trajectories
 
 
@@ -151,7 +152,13 @@ def _headings(tr: Trajectories, config: ScoringConfig) -> tuple[np.ndarray, np.n
 
 
 def beeline_evidence(
-    tr: Trajectories, config: ScoringConfig, assoc: np.ndarray, start: int = 0, team: np.ndarray | None = None
+    tr: Trajectories,
+    config: ScoringConfig,
+    assoc: np.ndarray,
+    start: int = 0,
+    team: np.ndarray | None = None,
+    *,
+    anyone_sighting: bool = False,
 ) -> dict[str, BeelineEvidence]:
     """
     Count each player's beelines: heading persistently for a player who was out of range, and arriving.
@@ -166,6 +173,7 @@ def beeline_evidence(
     * the player *turned* onto the target: ``beeline_turn_lookback_s`` earlier they were not already heading for
       the meeting place;
     * the target did not come to the player (``beeline_max_target_approach``);
+    * it did not end in a peaceful reunion (together a while soon after, nobody dying): meeting up is not hunting;
     * no clanmate (``team``) had the target within their own range shortly before (``team_shared_awareness_s``):
       information shared inside a clan is legitimate. Clanmates are never targets.
 
@@ -177,7 +185,9 @@ def beeline_evidence(
     :param config: scoring config
     :param assoc: (P, P) associate matrix from :func:`associates`
     :param start: count only moving time and episodes from this grid index on
-    :param team: (P, P) clanmates (see teams.py): what a clanmate had in range counts as known
+    :param team: (P, P) clanmates: what they had in range, or were already heading for, counts as known. Not
+        excluded as targets by this; pass clanmates in ``assoc`` for that.
+    :param anyone_sighting: also count what *any* other player had in range as known
     :return: evidence per player id
     """
     if len(tr.t) < 2:  # noqa: PLR2004
@@ -185,26 +195,82 @@ def beeline_evidence(
     team = team if team is not None else np.zeros_like(assoc)
     disp, moving = _headings(tr, config)
     shifts = null_shifts(tr, config)
+    knowledge = _Knowledge(tr, config, disp, moving) if team.any() or anyone_sighting else None
+    died = deaths(tr, config)
     result = {}
     for i, player_id in enumerate(tr.player_ids):
         ev = BeelineEvidence(moving_s=float(moving[start:, i].sum() * tr.dt))
         if ev.moving_s == 0:
             result[player_id] = ev
             continue
-        common = {
-            "heading": disp[:, i],
-            "moving": moving[:, i],
-            "assoc_row": assoc[i] | team[i],
-            "team_row": team[i],
-            "count_from": start,
-        }
-        found = _beeline_episodes(tr, config, i, others=tr.pos, **common)
+        shared = knowledge.shared(i, team[i], anyone_sighting=anyone_sighting) if knowledge is not None else None
+        common = {"heading": disp[:, i], "moving": moving[:, i], "assoc_row": assoc[i], "count_from": start}
+        found = _beeline_episodes(tr, config, i, others=tr.pos, shared_known=shared, died=died, **common)
         ev.episodes, ev.start_distance_sum_m = len(found), float(sum(e.start_distance_m for e in found))
         if shifts:
-            null = [len(_beeline_episodes(tr, config, i, others=_shifted(tr.pos, s), **common)) for s in shifts]
+            null = [
+                len(
+                    _beeline_episodes(
+                        tr,
+                        config,
+                        i,
+                        others=_shifted(tr.pos, s),
+                        # Shift the others' knowledge with them: who knew where the phantom target was.
+                        shared_known=_shifted(shared, s) if shared is not None else None,
+                        died=_shifted(died, s),
+                        **common,
+                    )
+                )
+                for s in shifts
+            ]
             ev.null_episodes = float(np.mean(null))
         result[player_id] = ev
     return result
+
+
+class _Knowledge:
+    """
+    Who had whom in sight, and who was heading for whom, at every moment; built once per window.
+
+    ``shared(i, clanmates)`` answers "did a clanmate (or, optionally, anyone else) have the target in range, or was a
+    clanmate already heading for it, shortly before?" for every target and moment.
+    """
+
+    def __init__(self, tr: Trajectories, config: ScoringConfig, disp: np.ndarray, moving: np.ndarray) -> None:
+        n = len(tr.player_ids)
+        self.tr = tr
+        self.share = tr.steps(config.team_shared_awareness_s)
+        self.sight = np.zeros((n, len(tr.t), n), dtype=bool)  # sight[m, t, k]: m had k in range
+        self.pursue = np.zeros((n, len(tr.t), n), dtype=bool)  # pursue[m, t, k]: m was heading straight for k
+        for m in range(n):
+            rel = tr.pos - tr.pos[:, m : m + 1, :]
+            dist = np.hypot(rel[..., 0], rel[..., 1])
+            h = disp[:, m]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                self.sight[m] = dist <= tr.awareness[:, m][:, None]
+                cos = (rel[..., 0] * h[:, None, 0] + rel[..., 1] * h[:, None, 1]) / (dist * np.hypot(*h.T)[:, None])
+                self.pursue[m] = moving[:, m][:, None] & (cos >= config.beeline_cos)
+            self.sight[m, :, m] = False
+            self.pursue[m, :, m] = False
+        self.sight_count = self.sight.sum(axis=0)
+
+    def shared(self, i: int, clanmates: np.ndarray, *, anyone_sighting: bool) -> np.ndarray:
+        """
+        (T, P): whether others knew where each player was, now or shortly before.
+
+        :param i: the approaching player (their own knowledge is handled separately)
+        :param clanmates: (P,) the player's clanmates: their sightings and their pursuits count
+        :param anyone_sighting: also count any other player's sightings. Not their pursuits: among strangers,
+            "somebody was heading that way" means nothing (with enough players someone always is), so joining a hunt
+            is a relay only between clanmates.
+        :return: the shared-knowledge mask
+        """
+        clanmates = clanmates.copy()
+        clanmates[i] = False
+        known = self.sight[clanmates].any(axis=0) | self.pursue[clanmates].any(axis=0)
+        if anyone_sighting:
+            known |= self.sight_count - self.sight[i] > 0
+        return _recently(known, self.share)
 
 
 def beeline_episodes(tr: Trajectories, config: ScoringConfig, player_id: str) -> list[BeelineEpisode]:
@@ -239,7 +305,8 @@ def _beeline_episodes(
     moving: np.ndarray,
     assoc_row: np.ndarray,
     count_from: int,
-    team_row: np.ndarray | None = None,
+    shared_known: np.ndarray | None = None,
+    died: np.ndarray | None = None,
 ) -> list[BeelineEpisode]:
     """The beeline episodes of player ``i`` towards ``others``."""
     rel = others - tr.pos[:, i : i + 1, :]
@@ -252,11 +319,13 @@ def _beeline_episodes(
     aware = tr.awareness[:, i]
     aligned[:, i] = False
     aligned[:, assoc_row] = False
-    near_recent = _known_recently(tr, config, dist=dist, aware=aware, others=others, team_row=team_row)
+    with np.errstate(invalid="ignore"):
+        near_recent = _recently(dist <= aware[:, None], tr.steps(config.near_lookback_s))
+    if shared_known is not None:
+        near_recent |= shared_known
     min_steps = tr.steps(config.beeline_min_duration_s)
     tail = tr.steps(config.beeline_arrive_grace_s)
     bridge = tr.steps(config.beeline_bridge_s)
-    before = tr.steps(config.beeline_turn_lookback_s)
 
     episodes: list[BeelineEpisode] = []
     for j in np.flatnonzero(aligned.any(axis=0)):
@@ -274,48 +343,121 @@ def _beeline_episodes(
                 reached = np.flatnonzero(dist[start : end + tail + 1, j] <= config.beeline_arrive_m)
             if len(reached) == 0:
                 continue
-            arrival = start + int(reached[0])
-            if start >= before and moving[start - before]:
-                earlier = heading[start - before]
-                to_meeting = tr.pos[arrival, i] - tr.pos[start - before, i]
-                norm = float(np.hypot(*earlier) * np.hypot(*to_meeting))
-                if norm > 0 and float(np.dot(earlier, to_meeting)) / norm >= config.beeline_cos:
-                    continue  # already on the way there before lining up on the target
-            # How far the target moved towards where the player was when the episode started.
-            approach = float(np.dot(others[arrival, j] - others[start, j], -rel[start, j] / d0))
-            if approach > config.beeline_max_target_approach * d0:
-                continue
-            episodes.append(BeelineEpisode(start, arrival, int(j), float(d0)))
+            episode = BeelineEpisode(start, start + int(reached[0]), int(j), float(d0))
+            if not _explained_otherwise(
+                tr, config, i, episode, others=others, heading=heading, moving=moving, died=died
+            ):
+                episodes.append(episode)
     return _merge(episodes)
 
 
-def _known_recently(
+def tip_evidence(
+    tr: Trajectories, config: ScoringConfig, assoc: np.ndarray, shifts: list[int], start: int = 0
+) -> dict[Pair, PairEvidence]:
+    """
+    Count tips: far approaches by one player to a target that another player had in sight just before.
+
+    For every approach that the player's own senses do not explain, each other player who *spotted* the target in
+    the preceding ``team_shared_awareness_s`` scores a tip for the pair: had it within their own range, but was not
+    with it (further than ``team_meet_radius_m``, and not a travelling companion of it). Without that condition,
+    anyone approaching a player would score tips with that player's own friends. The null does the same with the
+    other player's trajectory shifted in time. Teammates tip each other far more often than chance.
+
+    :param tr: trajectories
+    :param config: scoring config
+    :param assoc: (P, P) associates (never targets)
+    :param shifts: time shifts (grid steps) for the null
+    :param start: count only approaches starting at this grid index or later
+    :return: tip counts per pair (meetup fields zero)
+    """
+    n = len(tr.player_ids)
+    if len(tr.t) < 2:  # noqa: PLR2004
+        return {}
+    disp, moving = _headings(tr, config)
+    share = tr.steps(config.team_shared_awareness_s)
+    observed = np.zeros((n, n))
+    null = np.zeros((n, n))
+    for i in range(n):
+        episodes = _beeline_episodes(
+            tr, config, i, others=tr.pos, heading=disp[:, i], moving=moving[:, i], assoc_row=assoc[i], count_from=start
+        )
+        for e in episodes:
+            lo = max(0, e.start - share)
+            observed[i] += _spotted(tr, config, tr.pos, target=e.target, lo=lo, hi=e.start)
+            for s in shifts:
+                shifted = np.roll(tr.pos, s, axis=0)
+                null[i] += _spotted(tr, config, shifted, target=e.target, lo=lo, hi=e.start) / len(shifts)
+            # Not tips: the approacher itself, the target, and the target's travelling companions.
+            excluded = assoc[e.target].copy()
+            excluded[[i, e.target]] = True
+            observed[i, excluded] = 0
+            null[i, excluded] = 0
+    result = {}
+    for i in range(n):
+        for j in range(i + 1, n):
+            tips, expected = observed[i, j] + observed[j, i], null[i, j] + null[j, i]
+            if tips or expected:
+                pe = PairEvidence(tips=int(tips), null_tips=float(expected))
+                result[pair_key(tr.player_ids[i], tr.player_ids[j])] = pe
+    return result
+
+
+def _explained_otherwise(
     tr: Trajectories,
     config: ScoringConfig,
+    i: int,
+    e: BeelineEpisode,
     *,
-    dist: np.ndarray,
-    aware: np.ndarray,
     others: np.ndarray,
-    team_row: np.ndarray | None,
-) -> np.ndarray:
-    """(T, P): whether the player, or a clanmate shortly before, had each other player within range."""
+    heading: np.ndarray,
+    moving: np.ndarray,
+    died: np.ndarray | None,
+) -> bool:
+    """Whether something other than knowing where the target was explains the approach."""
+    before = tr.steps(config.beeline_turn_lookback_s)
+    then = e.start - before
+    if then >= 0 and moving[then] and _heading_for(tr, config, i, heading, then=then, place=e.arrival):
+        return True  # already on the way there before lining up on the target
+    # The target came to the player: it moved towards where the player was when the episode started.
+    towards_player = (tr.pos[e.start, i] - others[e.start, e.target]) / e.start_distance_m
+    approach = float(np.dot(others[e.arrival, e.target] - others[e.start, e.target], towards_player))
+    if approach > config.beeline_max_target_approach * e.start_distance_m:
+        return True
+    # Went to meet up with them, not to hunt them.
+    return died is not None and _reunion(tr, config, i, e.target, others=others, died=died, arrival=e.arrival)
+
+
+def _reunion(
+    tr: Trajectories, config: ScoringConfig, i: int, j: int, *, others: np.ndarray, died: np.ndarray, arrival: int
+) -> bool:
+    """Whether, soon after arriving, the two were peacefully together for a while: a reunion, not a hunt."""
+    end = min(len(tr.t), arrival + tr.steps(config.reunion_window_s) + 1)
+    rel = others[arrival:end, j] - tr.pos[arrival:end, i]
     with np.errstate(invalid="ignore"):
-        near = dist <= aware[:, None]
-    known = _recently(near, tr.steps(config.near_lookback_s))
-    if team_row is not None and team_row.any():
-        # What any clanmate had within their own range shortly before counts as known (voice chat).
-        known |= _recently(_team_sightings(tr, others, team_row), tr.steps(config.team_shared_awareness_s))
-    return known
+        together = np.hypot(rel[:, 0], rel[:, 1]) <= config.team_meet_radius_m
+    peaceful = together & ~died[arrival:end, i] & ~died[arrival:end, j]
+    return any(e - s + 1 >= tr.steps(config.team_meet_min_s) for s, e in _runs(peaceful))
 
 
-def _team_sightings(tr: Trajectories, others: np.ndarray, team_row: np.ndarray) -> np.ndarray:
-    """(T, P): whether any clanmate had each player within that clanmate's awareness range, at each moment."""
-    seen = np.zeros(others.shape[:2], dtype=bool)
-    for m in np.flatnonzero(team_row):
-        rel = others - others[:, m : m + 1, :]
-        with np.errstate(invalid="ignore"):
-            seen |= np.hypot(rel[..., 0], rel[..., 1]) <= tr.awareness[:, m][:, None]
-    return seen
+def _heading_for(
+    tr: Trajectories, config: ScoringConfig, i: int, heading: np.ndarray, *, then: int, place: int
+) -> bool:
+    """Whether player ``i`` was, at ``then``, already heading for where they are at ``place``."""
+    earlier = heading[then]
+    to_place = tr.pos[place, i] - tr.pos[then, i]
+    norm = float(np.hypot(*earlier) * np.hypot(*to_place))
+    return norm > 0 and float(np.dot(earlier, to_place)) / norm >= config.beeline_cos
+
+
+def _spotted(
+    tr: Trajectories, config: ScoringConfig, positions: np.ndarray, *, target: int, lo: int, hi: int
+) -> np.ndarray:
+    """(P,): whether each player (at ``positions``) spotted ``target`` during ``[lo, hi]``: in range, not with it."""
+    rel = positions[lo : hi + 1] - tr.pos[lo : hi + 1, target : target + 1, :]
+    dist = np.hypot(rel[..., 0], rel[..., 1])
+    with np.errstate(invalid="ignore"):
+        spotted = (dist <= tr.awareness[lo : hi + 1]) & (dist > config.team_meet_radius_m)
+    return np.asarray(spotted.any(axis=0), dtype=float)
 
 
 def _merge(episodes: list[BeelineEpisode]) -> list[BeelineEpisode]:
@@ -386,7 +528,9 @@ def ambush_evidence(
 
     A wait is a run of at least ``ambush_min_wait_s`` below ``stationary_speed_mps``. It is a hit if a non-group
     player who was beyond the waiting player's awareness range of the waiting spot at the start comes within
-    ``ambush_radius_m`` of it before the wait ends (plus ``ambush_grace_s``).
+    ``ambush_radius_m`` of it before the wait ends (plus ``ambush_grace_s``) **and dies shortly after**
+    (``team_fight_grace_s``). An ambush is an attack: an arrival not followed by a kill (a regroup, clanmates
+    joining at a carcass, someone passing by) says nothing either way, so it is not counted.
 
     :param tr: trajectories
     :param config: scoring config
@@ -406,6 +550,7 @@ def ambush_evidence(
     min_steps = tr.steps(config.ambush_min_wait_s)
     grace = tr.steps(config.ambush_grace_s)
     shifts = null_shifts(tr, config)
+    died = deaths(tr, config)
 
     result = {}
     for i, player_id in enumerate(tr.player_ids):
@@ -413,11 +558,13 @@ def ambush_evidence(
         ev = AmbushEvidence(waits=len(waits))
         if waits:
             common = {"waits": waits, "grace": grace, "assoc_row": assoc[i]}
-            ev.hits = _ambush_hits(tr, config, i, others=tr.pos, **common)
+            ev.hits = _ambush_hits(tr, config, i, others=tr.pos, died=died, **common)
             if shifts:
-                ev.null_hits = float(
-                    np.mean([_ambush_hits(tr, config, i, others=_shifted(tr.pos, s), **common) for s in shifts])
-                )
+                null = [
+                    _ambush_hits(tr, config, i, others=_shifted(tr.pos, s), died=_shifted(died, s), **common)
+                    for s in shifts
+                ]
+                ev.null_hits = float(np.mean(null))
         result[player_id] = ev
     return result
 
@@ -431,6 +578,7 @@ def _ambush_hits(
     waits: list[tuple[int, int]],
     grace: int,
     assoc_row: np.ndarray,
+    died: np.ndarray,
 ) -> int:
     hits = 0
     for start, end in waits:
@@ -443,6 +591,9 @@ def _ambush_hits(
         with np.errstate(invalid="ignore"):
             far_at_start = d[0] > tr.awareness[start, i]
             arrived = np.any(d <= config.ambush_radius_m, axis=0)
-        if np.any(far_at_start & arrived):
-            hits += 1
+        for j in np.flatnonzero(far_at_start & arrived):
+            at = start + int(np.flatnonzero(d[:, j] <= config.ambush_radius_m)[0])
+            if died[at, j]:
+                hits += 1
+                break
     return hits

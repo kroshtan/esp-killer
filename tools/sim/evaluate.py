@@ -6,29 +6,29 @@ Runs several seeds of :func:`tools.sim.scenarios.mixed_world` (or, with ``--clan
 scoring job does, and reports per archetype the score distribution and the key sub-score statistics, plus the
 separation between each cheater type and all honest players (AUC) and the flag rates at the configured threshold.
 It does this twice: for the first window alone, and for the evidence accumulated over all windows, which is what
-the job scores. Given a clan inference function (``--infer-teams module:function``, or ``infer_teams`` of
-:func:`run`), it also reports how well the inferred clans match the true teams, as pair precision and recall.
+the job scores, including clan inference carried across windows. It also reports how well the inferred clans match
+the true teams, as pair precision and recall.
 
-Run it with ``python -m tools.sim.evaluate --seeds 8 --hours 6``.
+Run it with ``python -m tools.sim.evaluate --seeds 8 --hours 6`` (add ``--clans`` for rival clans, and
+``--no-team-inference`` to see what clan inference changes).
 
 Simulation, not reality: use it to catch regressions and
 to see which honest behaviours come closest to the line, not as a promise about real servers.
 """
 
 import argparse
-import importlib
 import math
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import cast
 
 import numpy as np
 
 from server.scoring.combine import OrgEvidence, PlayerScore, extract_evidence, score_evidence
 from server.scoring.config import ScoringConfig
 from server.scoring.game import load_profile
+from server.scoring.teams import infer_teams
 from server.scoring.trajectories import from_frame
 from tools.sim.scenarios import (
     CHEATERS,
@@ -47,7 +47,6 @@ ALL_HONEST = (*HONEST, *CLAN_HONEST)
 ALL_CHEATERS = (*CHEATERS, *CLAN_CHEATERS)
 
 # Infers clans from accumulated evidence: player id -> clan id; players in no clan are absent or None.
-InferTeams = Callable[[OrgEvidence, ScoringConfig], Mapping[str, int | None]]
 
 
 @dataclass(frozen=True)
@@ -67,7 +66,7 @@ class TeamMetrics:
 class RunResult:
     first: list[Scored]  # scores from the first window only
     accumulated: list[Scored]  # scores from the evidence summed over all windows
-    teams: list[TeamMetrics] = field(default_factory=list)  # one per seed, only when ``infer_teams`` was given
+    teams: list[TeamMetrics] = field(default_factory=list)  # one per seed
 
 
 def run(
@@ -76,7 +75,6 @@ def run(
     hours: float = 6.0,
     *,
     world_factory: Callable[[int], World] = mixed_world,
-    infer_teams: InferTeams | None = None,
 ) -> RunResult:
     """
     Simulate one server per seed and score it window by window.
@@ -85,9 +83,7 @@ def run(
     :param config: scoring config (window and context lengths)
     :param hours: simulated time per server
     :param world_factory: builds the world for a seed, e.g. :func:`tools.sim.scenarios.clan_world`
-    :param infer_teams: if given, called per seed with the evidence summed over all windows and ``config``; the
-        clans it returns are compared with the true teams (:func:`pair_metrics`)
-    :return: the scores, plus the team metrics if ``infer_teams`` was given
+    :return: the scores, and how well the inferred clans match the true teams
     """
     profile = load_profile()
     first: list[Scored] = []
@@ -103,13 +99,13 @@ def run(
         for i, start in enumerate(np.arange(0.0, hours * 3600 - window + 1, window)):
             chunk = frame[(frame["t"] >= start - context) & (frame["t"] < start + window)]
             tr = from_frame(chunk, f"sim-{seed}", config, profile)
-            ev = extract_evidence([tr], config, count_from=start)
+            # Clans inferred from the windows so far plus this one, as the scoring job does.
+            ev = extract_evidence([tr], config, count_from=start, prior_pairs=total.pairs)
             total = total + ev
             if i == 0:
                 first += [Scored(seed, arch[s.player_id], s) for s in score_evidence(ev, config)]
         accumulated += [Scored(seed, arch[s.player_id], s) for s in score_evidence(total, config)]
-        if infer_teams is not None:
-            team_metrics.append(TeamMetrics(seed, pair_metrics(teams(world), infer_teams(total, config))))
+        team_metrics.append(TeamMetrics(seed, pair_metrics(teams(world), infer_teams(total.pairs, config))))
     return RunResult(first, accumulated, team_metrics)
 
 
@@ -227,14 +223,6 @@ def team_report(results: Sequence[TeamMetrics]) -> str:
     return "\n".join(lines)
 
 
-def _load_callable(spec: str) -> InferTeams:
-    """Import ``module:function``."""
-    module, _, name = spec.partition(":")
-    if not name:
-        raise argparse.ArgumentTypeError(f"expected module:function, got {spec!r}")
-    return cast(InferTeams, getattr(importlib.import_module(module), name))
-
-
 def main() -> None:
     """Command-line entry point."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -243,25 +231,20 @@ def main() -> None:
     parser.add_argument("--hours", type=float, default=6.0, help="simulated time per server")
     parser.add_argument("--clans", action="store_true", help="simulate servers with rival clans (clan_world)")
     parser.add_argument(
-        "--infer-teams",
-        type=_load_callable,
-        default=None,
-        metavar="MODULE:FUNCTION",
-        help="clan inference to evaluate against the true teams, e.g. server.scoring.teams:infer_teams",
+        "--no-team-inference", action="store_true", help="never link players into clans (for comparison)"
     )
     args = parser.parse_args()
-    config = ScoringConfig()
+    # An unreachable number of meetups switches clan inference off without touching the code paths.
+    config = ScoringConfig(team_min_meets=10**9) if args.no_team_inference else ScoringConfig()
     result = run(
         range(args.first_seed, args.first_seed + args.seeds),
         config,
         hours=args.hours,
         world_factory=clan_world if args.clans else mixed_world,
-        infer_teams=args.infer_teams,
     )
     print(f"== first {config.window_minutes:.0f}-minute window only\n{report(result.first, config)}\n")  # noqa: T201
     print(f"== accumulated over {args.hours:g} hours\n{report(result.accumulated, config)}")  # noqa: T201
-    if args.infer_teams is not None:
-        print(f"\n== clan inference: same-team pairs\n{team_report(result.teams)}")  # noqa: T201
+    print(f"\n== clan inference: same-team pairs\n{team_report(result.teams)}")  # noqa: T201
 
 
 if __name__ == "__main__":

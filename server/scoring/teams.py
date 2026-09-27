@@ -3,13 +3,15 @@ Clans from behaviour: which players coordinate with each other, inferred from mo
 
 A clan here is any set of players who play together: an in-game group, a mixed-species team, or a large clan whose
 members spread over the map and share sightings over voice chat. Nothing about that is visible to the server, so
-it is inferred from what persistent teammates do and strangers do not: **meet up again and again**. Members of a
-dispersed clan split up to hunt or scout, but keep coming back together (to regroup, at a base, to travel), day
-after day.
+it is inferred from two things persistent teammates do and strangers do not:
 
-Like the rest of the detector, meetups are compared with a time-shifted null: the other player's trajectory
-shifted by 10-30 minutes. Two strangers who both frequent the same waterhole also meet in the shifted version;
-teammates meet far more often than that.
+* **meetups**: they keep coming back together (to regroup, at a base, to travel), day after day;
+* **tips**: one keeps heading straight for players that the other had in sight just before. That is information
+  flowing between them, which is exactly what makes a clan's far-away hunting legitimate.
+
+Both are compared with a time-shifted null: the other player's trajectory shifted by 10-30 minutes. Two strangers
+who both frequent the same waterhole also meet in the shifted version, and a stranger who happened to be near the
+target is near it in the shifted version about as often; teammates far exceed that.
 
 Pair evidence is additive, so it is summed over the scoring horizon (a week) before pairs are linked. Linking is
 deliberately lenient: a wrong link can only excuse an approach (a cheater caught later), while a missed link can
@@ -31,18 +33,35 @@ Pair = tuple[str, str]  # player ids, sorted
 class PairEvidence:
     meets: int = 0  # separate meetups (together, after having been apart)
     null_meets: float = 0.0  # the same against time-shifted trajectories (mean over shifts)
+    tips: int = 0  # far approaches by one to a player the other had in sight just before (both directions)
+    null_tips: float = 0.0
 
     def __add__(self, other: "PairEvidence") -> "PairEvidence":
         """Evidence for both periods (or servers)."""
-        return PairEvidence(self.meets + other.meets, self.null_meets + other.null_meets)
+        return PairEvidence(
+            self.meets + other.meets,
+            self.null_meets + other.null_meets,
+            self.tips + other.tips,
+            self.null_tips + other.null_tips,
+        )
+
+    @property
+    def count(self) -> int:
+        """
+        Meetups and tips together.
+
+        :return: the count
+        """
+        return self.meets + self.tips
 
     def z(self) -> float:
         """
-        How far meetups exceed what chance explains, in (Poisson) standard deviations.
+        How far meetups and tips together exceed what chance explains, in (Poisson) standard deviations.
 
         :return: the z-score
         """
-        return (self.meets - self.null_meets) / float(np.sqrt(self.null_meets + 1.0))
+        null = self.null_meets + self.null_tips
+        return (self.count - null) / float(np.sqrt(null + 1.0))
 
 
 def pair_key(a: str, b: str) -> Pair:
@@ -78,7 +97,7 @@ def pair_evidence(
     result: dict[Pair, PairEvidence] = {}
     if len(tr.t) < 2:  # noqa: PLR2004
         return result
-    died = _deaths(tr, config)
+    died = deaths(tr, config)
     for i in range(n - 1):
         others = tr.pos[:, i + 1 :, :]
         observed = _meetups(
@@ -105,8 +124,14 @@ def pair_evidence(
     return result
 
 
-def _deaths(tr: Trajectories, config: ScoringConfig) -> np.ndarray:
-    """(T, P): whether each player dies (disappears or jumps, i.e. respawns) within the fight grace period."""
+def deaths(tr: Trajectories, config: ScoringConfig) -> np.ndarray:
+    """
+    Whether each player dies (disappears or jumps, i.e. respawns) within ``team_fight_grace_s`` of each moment.
+
+    :param tr: trajectories
+    :param config: scoring config
+    :return: (T, P) bool
+    """
     present = tr.present
     step = np.zeros(present.shape)
     step[1:] = np.nan_to_num(np.hypot(*(tr.pos[1:] - tr.pos[:-1]).transpose(2, 0, 1)))
@@ -178,7 +203,7 @@ def infer_teams(pairs: Mapping[Pair, PairEvidence], config: ScoringConfig) -> di
         return x
 
     for (a, b), ev in pairs.items():
-        if ev.meets >= config.team_min_meets and ev.z() >= config.team_link_z:
+        if ev.count >= config.team_min_meets and ev.z() >= config.team_link_z:
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[ra] = rb
