@@ -45,6 +45,7 @@ class SimPlayer:
     behaviour: Behaviour
     z: float = 0.0
     archetype: str = "honest"
+    team: str | None = None  # ground truth: the clan the player belongs to, None if solo; never exposed over RCON
     velocity: np.ndarray = field(default_factory=lambda: np.zeros(2))
     present: bool = True
     respawn_at: float | None = None  # while absent: when the player comes back
@@ -86,6 +87,7 @@ class World:
         name: str | None = None,
         dino_class: str | None = None,
         join_at: float = 0.0,
+        team: str | None = None,
     ) -> SimPlayer:
         """
         Add a player at ``pos`` (or a random position) with the given behaviour.
@@ -96,6 +98,7 @@ class World:
         :param name: display name; a generated one if omitted
         :param dino_class: class name; a random one if omitted
         :param join_at: simulation time at which the player joins (absent until then)
+        :param team: the clan the player belongs to (ground truth, never exposed over RCON); None for solo players
         :return: the new player
         """
         index = len(self.players)
@@ -108,6 +111,7 @@ class World:
             pos=pos.astype(float).copy() if pos is not None else self.random_point(),
             behaviour=behaviour,
             archetype=archetype,
+            team=team,
             present=join_at <= self.time_s,
             respawn_at=join_at if join_at > self.time_s else None,
         )
