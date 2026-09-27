@@ -100,7 +100,9 @@ Email is off until both `ESPK_SMTP_HOST` and `ESPK_SMTP_FROM_ADDRESS` are set.
 
 ### Training data and model (optional)
 
-Export to the private training dataset is off until both `ESPK_DATA_URL` and `ESPK_EXPORT_KEY` are set.
+With `ESPK_DATA_URL` set, the worker scores players with the promoted leakage model in shadow mode (shown in
+alerts and `list-flags`, never used to flag) and writes its scoring config to the store for the trainer. Export of
+scored windows to the private training dataset also needs `ESPK_EXPORT_KEY`.
 
 | Environment variable | Default | Meaning |
 |---|---|---|
@@ -108,6 +110,23 @@ Export to the private training dataset is off until both `ESPK_DATA_URL` and `ES
 | `ESPK_EXPORT_KEY` | none | Secret for pseudonymising ids in the dataset. Keep it stable, or histories stop linking up. |
 | `ESPK_S3_ENDPOINT_URL` | none | For S3-compatible storage that is not AWS (MinIO, a storage box). |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | none | Bucket credentials (standard names, also for non-AWS storage). |
+| `AWS_DEFAULT_REGION` | none | Only if your provider needs a specific region name for signing. |
+
+### Trainer (`python -m trainer train`)
+
+A weekly batch job from the same image; see [NOTES.md](../NOTES.md#leakage-model-self-supervised). It needs the bucket variables
+above except `ESPK_EXPORT_KEY` (the dataset is already pseudonymised), and takes these options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--store` | `$ESPK_DATA_URL` | Dataset and model store. |
+| `--days` | `28` | Train on this many recent days (0: all). |
+| `--min-new-rows` | `0` | Skip the run unless this many position rows arrived since the current model. |
+| `--config` | the backend's copy in the store | A `config.yaml` whose `scoring:` section to use instead. |
+| `--profile` | `evrima` | Game profile for awareness ranges. |
+| `--folds` | `3` | Cross-fitting folds. |
+| `--threads` | `0` (all cores) | LightGBM threads. |
+| `--bench-seeds`, `--bench-hours` | `9001,9002`, `4` | Simulated servers the promotion gate benchmarks on. |
 
 ## Orgs, servers and alert destinations (`config.yaml`)
 

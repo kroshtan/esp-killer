@@ -1,9 +1,11 @@
 """
 The background worker: ``python -m server.worker``.
 
-Every ``scoring_interval_s`` it scores new windows, queues alerts for new flags and for flagged players who
-rejoined, delivers due alerts, and once a day applies data retention. It is a separate process from the API so
-none of this ever delays ingest; both use the same SQLite database (WAL mode: one writer, concurrent readers).
+Every ``scoring_interval_s`` it scores new windows, scores them with the leakage model in shadow mode, queues
+alerts for new flags and for flagged players who rejoined, delivers due alerts, exports new windows to the private
+training dataset (the model and the export only when ``ESPK_DATA_URL`` is set), and once a day applies data
+retention. It is a separate process from the API so none of this ever delays ingest; both use the same SQLite
+database (WAL mode: one writer, concurrent readers).
 Run exactly one worker per database.
 """
 
@@ -24,13 +26,15 @@ from server.alerts.pipeline import detect_rejoins, enqueue_flag_alerts
 from server.alerts.settings import SmtpSettings
 from server.db.alerts import AlertRepository
 from server.db.database import Database
+from server.db.leakage import LeakageRepository
 from server.db.scoring import ScoringRepository
 from server.orgconfig import ConfigStore
 from server.retention import RetentionPolicy, run_retention
 from server.scoring.job import OrgRunResult, run_scoring
 from server.settings import ServerSettings
 from server.training.export import ExportResult, export_pending
-from server.training.schema import Pseudonymiser
+from server.training.schema import SCORING_CONFIG, Pseudonymiser
+from server.training.shadow import ShadowResult, ShadowScorer, scoring_config_json
 from server.training.store import ObjectStore, open_store
 
 logger = logging.getLogger("server.worker")
@@ -45,6 +49,7 @@ class RunReport:
     delivery: dict[str, int] = field(default_factory=dict)
     retention: dict[str, int] | None = None
     export: ExportResult | None = None
+    shadow: ShadowResult | None = None
 
 
 class Worker:
@@ -59,9 +64,13 @@ class Worker:
         self._last_retention: datetime | None = None
         self.training_store: ObjectStore | None = None
         self.pseudonymiser: Pseudonymiser | None = None
-        if settings.data_url and settings.export_key:
+        self.shadow: ShadowScorer | None = None
+        self._synced_scoring_config: bytes | None = None
+        if settings.data_url:
             self.training_store = open_store(settings.data_url)
-            self.pseudonymiser = Pseudonymiser(settings.export_key.get_secret_value())
+            self.shadow = ShadowScorer(self.training_store, LeakageRepository(self.db), self.scoring)
+            if settings.export_key:
+                self.pseudonymiser = Pseudonymiser(settings.export_key.get_secret_value())
 
     def run_once(self, now: datetime | None = None, http: httpx.AsyncClient | None = None) -> RunReport:
         """
@@ -76,6 +85,13 @@ class Worker:
         s = self.settings
         report = RunReport()
         report.scoring = run_scoring(self.scoring, config, now, lag=timedelta(seconds=s.scoring_lag_s))
+        # Before alerts, so a new flag's alert shows the model's opinion on the same windows. The model is a second
+        # opinion: whatever goes wrong with it must not stop scoring, alerts or retention.
+        if self.shadow is not None:
+            try:
+                report.shadow = self.shadow.run(config, now)
+            except Exception:
+                logger.exception("leakage model (shadow mode) failed; retrying next run")
 
         email_enabled = self.smtp.is_configured
         new_flags = [flag_id for r in report.scoring for flag_id in r.new_flag_ids]
@@ -101,11 +117,29 @@ class Worker:
             report.export = export_pending(
                 self.scoring, self.training_store, self.pseudonymiser, config.scoring_config, now=now
             )
+        if self.training_store is not None:
+            self._sync_scoring_config(self.training_store)
 
         if self._last_retention is None or now - self._last_retention >= RETENTION_EVERY:
             report.retention = run_retention(self.db, self.retention_policy(), now)
             self._last_retention = now
         return report
+
+    def _sync_scoring_config(self, store: ObjectStore) -> None:
+        """
+        Write the scoring config to the store when it changed, for the trainer (which cannot read config.yaml).
+
+        :param store: the private training store
+        """
+        data = scoring_config_json(self.config.config)
+        if data == self._synced_scoring_config:
+            return
+        try:
+            store.put(SCORING_CONFIG, data)
+        except Exception:
+            logger.exception("could not write the scoring config to the training store; retrying next run")
+            return
+        self._synced_scoring_config = data
 
     def retention_policy(self) -> RetentionPolicy:
         """

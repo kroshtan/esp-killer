@@ -9,8 +9,10 @@ The code is public; the dataset and the models are not. They live in a private s
     dataset/v1/positions/date=YYYY-MM-DD/<org>-<window_end>.parquet   one row per player per poll
     dataset/v1/evidence/date=YYYY-MM-DD/<org>-<window_end>.parquet    per player per scoring window
     dataset/v1/windows/<org>-<window_end>.json                        one per exported window (row counts)
-    models/<version>/model.txt, metadata.json                         candidate and promoted models
+    models/<version>/model_a.txt, model_b.txt, metadata.json          saved models (see ``leakage.py``)
+    models/candidates/<version>.json                                  every candidate's gate metrics
     models/current.json                                               {"version": ...} of the promoted model
+    config/scoring.json                                               the backend's scoring config, for the trainer
 
 Identifiers are pseudonymised with a keyed hash (HMAC-SHA256 with ``ESPK_EXPORT_KEY``): the same player gets the
 same id in every export, so their history links up, but ids cannot be turned back into Steam ids or names without
@@ -27,6 +29,8 @@ VERSION = "v1"
 DATASET = f"dataset/{VERSION}"
 MODELS = "models"
 CURRENT_MODEL = f"{MODELS}/current.json"
+# Written by the worker, so the trainer (which cannot read the backend's config.yaml) uses the same thresholds.
+SCORING_CONFIG = "config/scoring.json"
 
 POSITIONS = pa.schema(
     [

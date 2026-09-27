@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -7,11 +7,20 @@ import pytest
 from typer.testing import CliRunner
 
 import trainer.train as train_module
+from server.alerts.message import Alert, discord_payload, email_content
+from server.db.database import Database
+from server.db.leakage import LeakageRepository
+from server.db.repository import Repository
+from server.orgconfig import OrgConfig, OrgEntry, ServerEntry, save_config
 from server.scoring.config import ScoringConfig
+from server.settings import ServerSettings
 from server.training.leakage import FeatureSpec, LeakageModel, Samples, current_version, promote
-from server.training.schema import CURRENT_MODEL
+from server.training.schema import CURRENT_MODEL, SCORING_CONFIG
 from server.training.store import LocalStore
-from trainer.__main__ import app
+from server.worker import Worker
+from tests.helpers import ingest_frame
+from tools.sim.scenarios import mixed_world, record
+from trainer.__main__ import _scoring_config, app
 from trainer.dataset import chunks, count_rows, load_positions
 from trainer.devdata import LABELS, generate
 from trainer.gate import Benchmark, GateThresholds, evaluate, run_benchmark
@@ -214,3 +223,85 @@ def test_cli_devdata_and_help(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert count_rows(LocalStore(tmp_path)) > 0
     assert runner.invoke(app, ["train", "--help"]).exit_code == 0
+
+
+# --- shadow mode in the backend ---
+
+
+@pytest.fixture
+def shadow_worker(tmp_path: Path, trained: train_module.TrainResult) -> tuple[Worker, LocalStore]:
+    store = LocalStore(tmp_path / "store")
+    trained.model.save(store, "v1")
+    promote(store, "v1")
+    save_config(tmp_path / "config.yaml", OrgConfig(orgs={"org": OrgEntry(servers={"s1": ServerEntry()})}))
+    db = Database(tmp_path / "espk.db")
+    ingest_frame(Repository(db), record(mixed_world(905), 4.5 * 3600), "org", "s1", SHADOW_START)
+    settings = ServerSettings.model_validate(
+        {"config_path": tmp_path / "config.yaml", "database_path": tmp_path / "espk.db", "data_url": str(store.root)}
+    )
+    return Worker(settings), store
+
+
+SHADOW_START = datetime(2026, 1, 1, tzinfo=UTC)
+SHADOW_NOW = SHADOW_START + timedelta(hours=4.5, minutes=10)
+
+
+def test_worker_scores_windows_with_the_promoted_model(shadow_worker: tuple[Worker, LocalStore]) -> None:
+    worker, store = shadow_worker
+    report = worker.run_once(SHADOW_NOW, http=None)
+    assert report.shadow is not None
+    assert (report.shadow.model_version, report.shadow.windows) == ("v1", 2)
+    assert report.shadow.scored > 10
+    assert report.export is None  # no export key: the model runs, the export does not
+
+    leakage = LeakageRepository(worker.db)
+    player = next(p.player_id for p in mixed_world(905).players)
+    shadow = leakage.latest("org", player)
+    assert shadow is not None and shadow.model_version == "v1" and shadow.moves > 0
+    assert "shadow" in shadow.line()
+
+    # Nothing is scored twice; a newly promoted model scores the horizon's windows again.
+    again = worker.run_once(SHADOW_NOW + timedelta(minutes=5), http=None)
+    assert again.shadow is not None and again.shadow.windows == 0
+    LeakageModel.load(store, "v1").save(store, "v2")
+    promote(store, "v2")
+    third = worker.run_once(SHADOW_NOW + timedelta(minutes=10), http=None)
+    assert third.shadow is not None and (third.shadow.model_version, third.shadow.windows) == ("v2", 2)
+
+    # The trainer reads the scoring config the worker wrote to the store.
+    assert ScoringConfig.model_validate_json(store.get(SCORING_CONFIG)) == ScoringConfig()
+
+
+def test_a_broken_model_never_stops_the_worker(shadow_worker: tuple[Worker, LocalStore]) -> None:
+    worker, store = shadow_worker
+    store.put(CURRENT_MODEL, json.dumps({"version": "missing"}).encode())
+    report = worker.run_once(SHADOW_NOW, http=None)
+    assert report.shadow is None
+    assert report.scoring and report.scoring[0].windows == 2
+
+
+def test_alerts_show_the_model_line_but_the_score_is_the_rules() -> None:
+    alert = Alert(
+        kind="flag",
+        org_id="org",
+        player_id="76561198000000001",
+        player_name="Someone",
+        server_ids=("s1",),
+        score=0.7,
+        details={},
+        created_at=SHADOW_START,
+        flag_id=1,
+        model_line="Model (shadow, not part of the score): leakage z 3.1 over 5.0 h of movement (model v1)",
+    )
+    payload = discord_payload(alert)
+    behaviours = next(f["value"] for f in payload["embeds"][0]["fields"] if f["name"] == "Behaviours")
+    assert "leakage z 3.1" in behaviours
+    assert "leakage z 3.1" in email_content(alert).text
+
+
+def test_trainer_uses_the_scoring_config_from_the_store(tmp_path: Path) -> None:
+    store = LocalStore(tmp_path)
+    assert _scoring_config(store, None) == ScoringConfig()
+    custom = ScoringConfig(awareness_m=250.0)
+    store.put(SCORING_CONFIG, custom.model_dump_json().encode())
+    assert _scoring_config(store, None) == custom

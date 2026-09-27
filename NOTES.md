@@ -247,10 +247,23 @@ anything. `--min-new-rows N` makes it exit early unless N position rows were exp
 trained. Environment: `ESPK_DATA_URL` (`s3://bucket/prefix` or a path), and for S3-compatible stores
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `ESPK_S3_ENDPOINT_URL`. Schedule it weekly, either as
 
-- a **Render Cron Job** running the `Dockerfile.trainer` image, schedule `0 4 * * 1` (Mondays 04:00 UTC), with the
-  variables above set in the dashboard; or
+- a **Render Cron Job** running the backend image (`ghcr.io/kroshtan/esp-killer`) with the command
+  `python -m trainer train`, schedule `0 4 * * 1` (Mondays 04:00 UTC), with the variables above set in the
+  dashboard (see `render.yaml`); or
 - a **crontab** line on any host with Docker:
-  `0 4 * * 1 docker run --rm --env-file /etc/espk-trainer.env espk-trainer >> /var/log/espk-trainer.log 2>&1`.
+  `0 4 * * 1 docker run --rm --env-file /etc/espk-trainer.env ghcr.io/kroshtan/esp-killer python -m trainer train`.
+
+The trainer uses the scoring config the worker writes to the store (`config/scoring.json`), so the operator's
+private thresholds apply without the trainer reading `config.yaml`; `--config` overrides it.
+
+### Shadow mode
+
+The worker loads the promoted model (`models/current.json`, checked every run) and scores each scoring window
+within the evidence horizon with it, storing each player's additive statistics per window and model version. A
+player's model score is their statistics summed over the horizon. It is shown in alerts and `list-flags` next to
+the rule-based score and never opens a flag. A newly promoted model scores the horizon's windows again (as long as
+their positions are still retained), so it catches up within a few runs. Any failure of the model is logged and
+leaves scoring and alerts untouched.
 
 **Do not run it in GitHub Actions**: this repository is public and so are its Actions logs, which would expose the
 model metrics and the store's layout. Training needs a few GB of RAM for a few weeks of a busy org; it uses all cores.

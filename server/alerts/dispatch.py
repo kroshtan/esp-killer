@@ -22,6 +22,7 @@ from server.alerts.message import Alert
 from server.alerts.render import Highlight, PathImage, RenderOptions, Track, render_path_png, select_nearby
 from server.alerts.settings import SmtpSettings
 from server.db.alerts import AlertRepository, OutboxItem
+from server.db.leakage import LeakageRepository
 from server.db.scoring import Flag, ScoringRepository
 from server.orgconfig import OrgConfig
 from server.scoring.config import ScoringConfig
@@ -66,6 +67,7 @@ async def deliver_due(
     :return: counts of sent, retried and failed deliveries
     """
     settings = settings or DispatchSettings()
+    leakage = LeakageRepository(scoring.db)
     counts = {"sent": 0, "retry": 0, "failed": 0}
     images: dict[tuple[int, str], bytes | None] = {}
     for item in alerts.due(now):
@@ -80,7 +82,8 @@ async def deliver_due(
             images[key] = None
             if item.kind == "flag":
                 images[key] = await asyncio.to_thread(evidence_image, scoring, config, flag, item, settings)
-        alert = build_alert(flag, item, images[key])
+        shadow = leakage.latest(flag.org_id, flag.player_id)
+        alert = build_alert(flag, item, images[key], model_line=shadow.line() if shadow else None)
         try:
             await _send(item, alert, config, smtp, http)
         except DeliveryError as e:
@@ -102,13 +105,14 @@ async def deliver_due(
     return counts
 
 
-def build_alert(flag: Flag, item: OutboxItem, image_png: bytes | None) -> Alert:
+def build_alert(flag: Flag, item: OutboxItem, image_png: bytes | None, model_line: str | None = None) -> Alert:
     """
     The message content for an outbox row.
 
     :param flag: the flag the alert is about
     :param item: the outbox row
     :param image_png: evidence image, if any
+    :param model_line: the leakage model's opinion (shadow mode), if it has scored the player
     :return: the alert
     """
     servers = (item.server_id,) if item.server_id else tuple(flag.details.get("servers", ()))
@@ -123,6 +127,7 @@ def build_alert(flag: Flag, item: OutboxItem, image_png: bytes | None) -> Alert:
         created_at=item.created_at,
         flag_id=flag.id,
         image_png=image_png,
+        model_line=model_line,
     )
 
 

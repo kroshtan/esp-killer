@@ -98,6 +98,21 @@ jobs:
           # Deploying by digest rather than :latest means Render runs exactly this build.
           curl -fsS -X POST --get "$HOOK" --data-urlencode "imgURL=${IMAGE}" -o /dev/null
           echo "Deploy of ${IMAGE} triggered."
+      - name: Point the trainer cron job at the same image
+        # Optional: the weekly Render Cron Job running `python -m trainer train` from this image. Its deploy hook only
+        # updates the image; the job still runs on its own schedule.
+        env:
+          HOOK: ${{ secrets.RENDER_TRAINER_DEPLOY_HOOK_URL }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$HOOK" ]]; then
+            echo "RENDER_TRAINER_DEPLOY_HOOK_URL is not set; no trainer cron job to update."
+            exit 0
+          fi
+          IMAGE="${IMAGE,,}@${DIGEST}"
+          curl -fsS -X POST --get "$HOOK" --data-urlencode "imgURL=${IMAGE}" -o /dev/null
+          echo "Trainer image set to ${IMAGE}."
       - name: Wait until the new build is live
         # The hook only starts the deploy. The agent release waits for this step, so a published agent never
         # talks to an older backend. Needs the repository variable ESPK_HEALTH_URL (the service's /healthz).

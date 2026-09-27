@@ -186,6 +186,37 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (org_id, window_end)
     );
     """,
+    # 7: the leakage model in shadow mode: per-window statistics per model version, and each player's latest score.
+    """
+    CREATE TABLE leakage_state (
+        org_id        TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        window_end    TEXT NOT NULL,
+        scored_at     TEXT NOT NULL,
+        PRIMARY KEY (org_id, model_version, window_end)
+    );
+    CREATE TABLE leakage_evidence (
+        org_id        TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        window_end    TEXT NOT NULL,
+        player_id     TEXT NOT NULL,
+        stats         TEXT NOT NULL,
+        PRIMARY KEY (org_id, model_version, window_end, player_id)
+    );
+    CREATE INDEX leakage_evidence_window ON leakage_evidence (window_end);
+    CREATE TABLE leakage_scores (
+        org_id        TEXT NOT NULL,
+        player_id     TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        computed_at   TEXT NOT NULL,
+        z             REAL NOT NULL,
+        score         REAL NOT NULL,
+        moves         INTEGER NOT NULL,
+        hours         REAL NOT NULL,
+        summary       TEXT NOT NULL,
+        PRIMARY KEY (org_id, player_id)
+    );
+    """,
 ]
 
 

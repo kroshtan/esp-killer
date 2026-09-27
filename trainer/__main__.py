@@ -15,7 +15,8 @@ import typer
 from server.orgconfig import load_config
 from server.scoring.config import ScoringConfig
 from server.scoring.game import load_profile
-from server.training.store import LocalStore, open_store
+from server.training.schema import SCORING_CONFIG
+from server.training.store import LocalStore, ObjectStore, open_store
 from trainer.devdata import generate
 from trainer.gate import Benchmark
 from trainer.pipeline import run_training
@@ -37,6 +38,23 @@ def _seeds(text: str) -> tuple[int, ...]:
     return tuple(int(s) for s in text.split(",") if s.strip())
 
 
+def _scoring_config(store: ObjectStore, path: Path | None) -> ScoringConfig:
+    """
+    The scoring config to train with: from ``path``, else the backend's copy in the store, else the defaults.
+
+    :param store: the dataset/model store
+    :param path: a config.yaml, if given
+    :return: the config
+    """
+    if path is not None:
+        return load_config(path).scoring_config
+    try:
+        return ScoringConfig.model_validate_json(store.get(SCORING_CONFIG))
+    except KeyError:
+        logger.warning("no scoring config in the store (the backend writes it); using the defaults")
+        return ScoringConfig()
+
+
 @app.command()
 def train(  # noqa: PLR0917 - typer options
     store: StoreOption,
@@ -45,7 +63,8 @@ def train(  # noqa: PLR0917 - typer options
         int, typer.Option(help="Exit early unless this many position rows arrived since the current model")
     ] = 0,
     config: Annotated[
-        Path | None, typer.Option(help="The backend's config.yaml, for its scoring: section (default: defaults)")
+        Path | None,
+        typer.Option(help="A config.yaml for its scoring: section (default: the one the backend wrote to the store)"),
     ] = None,
     profile: Annotated[str, typer.Option(help="Game profile for awareness ranges")] = "evrima",
     folds: Annotated[int, typer.Option(help="Cross-fitting folds")] = 3,
@@ -57,10 +76,10 @@ def train(  # noqa: PLR0917 - typer options
 ) -> None:
     """Train a candidate on recent data, gate it, and promote it if it passes."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    scoring = load_config(config).scoring_config if config is not None else ScoringConfig()
+    object_store = open_store(store)
     outcome = run_training(
-        open_store(store),
-        config=scoring,
+        object_store,
+        config=_scoring_config(object_store, config),
         params=TrainParams(folds=folds, threads=threads),
         bench=Benchmark(seeds=_seeds(bench_seeds), hours=bench_hours),
         profile=load_profile(profile),

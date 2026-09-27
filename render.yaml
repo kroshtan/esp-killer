@@ -10,6 +10,11 @@
 #
 # config.yaml (orgs, key hashes, webhook URLs) lives on the disk and is managed with the CLI from the Render
 # shell, e.g. `python -m server add-org my-community --discord-webhook https://discord.com/api/webhooks/...`.
+#
+# Training data and the leakage model live in a private S3-compatible bucket (ESPK_DATA_URL). The worker exports
+# scored windows to it and scores players with the promoted model in shadow mode; the cron job retrains weekly from
+# the same image (CI updates its image through the optional RENDER_TRAINER_DEPLOY_HOOK_URL secret). The bucket
+# settings are entered in the dashboard for both, never committed.
 services:
   - type: web
     name: esp-killer
@@ -40,4 +45,36 @@ services:
       - key: ESPK_SMTP_PASSWORD
         sync: false
       - key: ESPK_SMTP_FROM_ADDRESS
+        sync: false
+      # Private training dataset and model store (optional; see docs/configuration.md).
+      - key: ESPK_DATA_URL
+        sync: false  # s3://bucket/prefix
+      - key: ESPK_EXPORT_KEY
+        sync: false  # long random secret; never change it, or players' histories stop linking up
+      - key: ESPK_S3_ENDPOINT_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+  # Weekly retrain of the leakage model: one run that exits. It promotes the new model only if it passes the gate;
+  # the worker picks up a promoted model within a scoring interval. See NOTES.md, "Leakage model".
+  - type: cron
+    name: esp-killer-trainer
+    runtime: image
+    image:
+      url: ghcr.io/kroshtan/esp-killer:latest
+    plan: standard  # training holds the recent dataset in memory; 2 GB is plenty for a few servers
+    region: frankfurt
+    schedule: "0 4 * * 1"  # Mondays 04:00 UTC
+    dockerCommand: python -m trainer train
+    envVars:
+      - key: ESPK_DATA_URL
+        sync: false
+      - key: ESPK_S3_ENDPOINT_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
         sync: false

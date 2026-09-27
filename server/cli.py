@@ -13,6 +13,7 @@ import typer
 from pydantic import TypeAdapter, ValidationError
 
 from server.db.database import Database
+from server.db.leakage import LeakageRepository
 from server.db.repository import Repository
 from server.db.scoring import FLAG_STATUSES, OPEN, ScoringRepository
 from server.keys import generate_key, hash_key
@@ -170,7 +171,9 @@ def list_flags(
     """List flagged players with their scores and the behaviours behind them."""
     if status != "all" and status not in FLAG_STATUSES:
         raise _fail(f"status must be one of {', '.join(FLAG_STATUSES)} or all")
-    found = _scoring_repo(database).list_flags(org_id=org, status=None if status == "all" else status)
+    repo = _scoring_repo(database)
+    found = repo.list_flags(org_id=org, status=None if status == "all" else status)
+    leakage = LeakageRepository(repo.db)
     if not found:
         typer.echo("no flags")
         return
@@ -184,6 +187,9 @@ def list_flags(
             f"score {f.score:.2f} (max {f.max_score:.2f})  [{behaviours}]  "
             f"flagged {f.created_at:%Y-%m-%d %H:%M}Z"
         )
+        shadow = leakage.latest(f.org_id, f.player_id)
+        if shadow is not None:
+            typer.echo(f"       {shadow.line()}")
 
 
 @app.command("mark-false-positive")

@@ -69,6 +69,8 @@ class Alert:
     created_at: datetime
     flag_id: int
     image_png: bytes | None = None
+    # The leakage model's opinion in shadow mode (see server/training/shadow.py); not part of the score.
+    model_line: str | None = None
 
 
 @dataclass(frozen=True)
@@ -281,6 +283,8 @@ def discord_payload(alert: Alert) -> dict[str, Any]:
     # Behaviour lines are our own text (numbers from details), so they need no escaping.
     lines = behaviour_lines(alert.details)
     behaviours = _join_limited(lines, EMBED_FIELD_VALUE_MAX, sep="\n") if lines else "No behaviour details."
+    if alert.model_line:
+        behaviours = truncate(f"{behaviours}\n{alert.model_line}", EMBED_FIELD_VALUE_MAX)
 
     embed: dict[str, Any] = {
         "title": truncate(f"{headline(alert)}: {name}", EMBED_TITLE_MAX),
@@ -345,6 +349,8 @@ def email_content(alert: Alert) -> EmailContent:
     player_id = clean_text(alert.player_id)
     servers = ", ".join(clean_text(s) for s in alert.server_ids) or "(unknown)"
     lines = behaviour_lines(alert.details) or ["No behaviour details."]
+    if alert.model_line:
+        lines.append(alert.model_line)
     subject = clean_text(f"[esp-killer] {headline(alert)}: {name} ({alert.org_id})", 200)
 
     facts = [
