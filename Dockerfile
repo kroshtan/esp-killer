@@ -4,6 +4,9 @@ FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.11 /uv /usr/local/bin/uv
 
+# LightGBM (the leakage model, server/training/leakage.py) needs the OpenMP runtime, which the slim image lacks.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # ── Dependencies (cached layer — only reruns when the lock file changes) ─────

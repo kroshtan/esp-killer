@@ -138,6 +138,123 @@ Things worth knowing when reading flags:
 - **Streamers.** Following a streamer's broadcast position is information leakage too, and looks the same.
 - **Scoring config is global** (the `scoring:` section of config.yaml), not per org.
 
+## Leakage model (self-supervised)
+
+A label-free complement to the rules: how much a player's moves follow players **nobody could have told them
+about**. Code: `server/training/leakage.py` (features and scoring, shared with the backend) and `trainer/`
+(training, evaluation, promotion). Data and models live in the private store (`server/training/store.py`), never in
+the repository.
+
+### Method
+
+- **Samples.** Every 15 s, per player continuously alive: the direction of their next 20 s of movement relative to
+  the heading they last moved in, in 12 bins of 30°, or "stays put". Standing players are sampled too: where
+  someone sets off to after a rest or a fight is one of the most telling decisions.
+- **What is known.** Exactly the beeline rule's definition: visible (awareness range from the game profile, plus a
+  50 m margin), seen by the player in the last 10 minutes, a friend (time spent together) or clanmate, within range
+  of a clanmate or an **independent spotter** in the last 3 minutes, next to (150 m) any such player, or coming
+  into view before the predicted move is over (the move may be a reaction to them). Everyone else within 3 km is
+  **hidden**. Each of the last three rules removed a signal that simulated honest hunters had (prey at 310 m, the
+  prey's companions, prey about to appear); the last one also costs about half of the signal from ESP users,
+  whose final approach it excuses, as the beeline rule does.
+- **Two models** (LightGBM, CPU). Model A sees the player's own movement, map position and absolute direction (map
+  structure: waterholes, trails), time since spawn, class, and the nearest visible, friendly and known players
+  (distance, bearing, speed, their heading relative to the player). Model B is A plus a residual that sees *only*
+  the hidden players (nearest three, how many, how steadily the player has been heading for the nearest). Both are
+  **step-selection models**: they score each candidate move, so "the move towards a hidden player is taken" is one
+  pattern for all directions. A multiclass model needed a separate pattern per direction and learned almost nothing
+  from the few ESP users in the data.
+- **Against the time-shifted null.** A player's per-sample term is `log p_B(move) - mean over shifts of
+  log p_B(move | hidden players shifted by 10/20/30 min)`. For an honest player real and phantom hidden players are
+  interchangeable (same places, other times), so the terms average zero *whatever B learned*; the raw gain
+  `log p_B - log p_A` did not (B's extra confidence and map effects gave everyone small positive or negative
+  gains). Per player: z = sum of terms / standard deviation from 2-minute blocks (never below the independent-sample
+  value). The statistics are additive, so the backend stores them per window and sums them over the week.
+- **Training without labels.** Cross-fitted by player (3 folds by a hash of the pseudonymised id; the same player is
+  in the same fold on every server): every number used for calibration and the gate comes from models that never
+  saw that player. B's residual is also shown **synthetic ESP users**: every player's real track with hunting
+  phases (half of all 10-minute phases) replaced by pursuits of the nearest hidden player at the player's own speed;
+  the rest of the world stays real. Without that, B learns only from the ESP users already in the data, which on a
+  small or clean dataset is too little (on 4 simulated servers x 3 h, beeline AUC 0.35-0.67 without, 0.8-0.9
+  with). The
+  null keeps this safe for honest players. The final model is refit on everything.
+- **Calibration.** The sub-score ramps linearly over 4 z units and reaches the flag level (0.6) at the larger of
+  z = 5 and the 99.5th percentile of the out-of-sample real z (players with at least 120 samples, about 30 min).
+  At most 0.5 % of real players can be flagged by it.
+
+### Promotion gate (no labels)
+
+`python -m trainer train` trains a candidate on the last 28 days and promotes it (writes `models/<version>/` then
+`models/current.json`) only if:
+
+1. synthetic ESP users from held-out folds rank above real players: AUC >= 0.7;
+2. on fresh simulated servers (mixed and clan worlds, seeds never used for training, 4 h each), no honest player
+   reaches the flag level, and beeline cheaters rank above honest players: AUC >= 0.85;
+3. the out-of-sample real flag rate is within 0.5 %;
+4. if a model is promoted already: the candidate is not worse on (1) and (2) by more than 0.03 (the current model is
+   re-run on the same simulated servers), and its highest honest simulated z is not more than 1 above the current
+   model's.
+
+The AUC thresholds sit just below what the method reaches on the simulated development data (0.74 and 0.92): they
+stop a model that learned nothing (about 0.5; `tests/integration/test_trainer.py` trains one on shuffled hidden
+columns) or regressed badly. They are not a claim that these values are good enough, and need revisiting on real
+data.
+
+Every candidate's metrics, benchmark and gate result are written to `models/candidates/<version>.json`, promoted
+or not; the promoted model's `metadata.json` has the same. A rejected candidate is not an error (exit code 0).
+
+### Evaluation on simulated data
+
+`python -m trainer devdata --store ./devdata --seeds 1-6 --hours 4` (12 servers: 6 mixed, 6 clan worlds; 1.5 M
+position rows, 340 players) then `python -m trainer train --store ./devdata --bench-seeds 9001-9003`:
+
+| | |
+|---|---|
+| synthetic ESP users vs real players (held out) | AUC 0.74 |
+| cross-fitted z on the training servers, beeline cheaters vs honest | AUC 0.87; mean z 1.4, honest archetypes -0.2 to 0.3 |
+| benchmark: 6 fresh servers x 4 h, AUC vs honest | beeline 0.92, part-time 0.91, ambush 0.75, ESP clan member 0.66 |
+| highest honest z on that benchmark | 2.7 (clan hunters 1.1, clan members 1.3, spotters 1.0, hunters 2.0) |
+| benchmark: 4 fresh servers x 12 h | beeline mean z 3.3 (max 4.0), part-time 3.0, AUC 1.0; honest max 2.0 |
+| flag level | z 5.0 (the floor; the highest real z was 3.6), so nobody is flagged yet |
+| training (24 cores) | 2 min 7 s including sample building and benchmark; model 1.3 MB |
+| scoring a 2.5 h window | 0.5 s for 26 players, 5.5 s for 93 |
+
+The runs are deterministic (same data, same model). This is a slow, cumulative signal: after 4 hours no cheater is
+near z 5, after 12 hours the best are at 4. z grows with the square root of playing time for a consistent ESP user
+and stays put for honest players (hunters: mean 0.1 at 4 h, 0.2 at 12 h), so over the week's horizon full-time ESP
+users should cross it; part-time and in-clan ESP use mostly will not. It ranks well long before it flags, which is
+what the shadow and corroborating phases use.
+
+### Limitations
+
+- **Power depends on data.** B must learn what following hidden players looks like; the synthetic ESP users teach
+  it one style (straight pursuit). ESP use that looks different (ambushes, relaying to a clan) is caught only as far
+  as it resembles that, or as the real data shows it.
+- **Simulation is not reality**, and neither are synthetic pursuits of real tracks: the gate's thresholds are set
+  from simulated data and will need revisiting on real servers.
+- **Honest confounders the null does not remove**: anything that correlates a player's moves with where unseen
+  players are *right now* (a streamer's position, a friend on voice chat not detected as a friend, the game's own
+  sounds beyond the awareness range). The margin and the known-player rules cover the ones seen in simulation.
+- **Retraining changes scores.** Stored per-window statistics come from the model current at the time; after a
+  promotion, older windows are not rescored.
+- **The trainer needs the scoring config** (`--config` with the backend's config.yaml) to use the operator's
+  thresholds for what counts as known; without it, the defaults.
+
+### Running it
+
+The trainer is a batch job: `python -m trainer train --store "$ESPK_DATA_URL"` exits 0 whether or not it promoted
+anything. `--min-new-rows N` makes it exit early unless N position rows were exported since the current model was
+trained. Environment: `ESPK_DATA_URL` (`s3://bucket/prefix` or a path), and for S3-compatible stores
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `ESPK_S3_ENDPOINT_URL`. Schedule it weekly, either as
+
+- a **Render Cron Job** running the `Dockerfile.trainer` image, schedule `0 4 * * 1` (Mondays 04:00 UTC), with the
+  variables above set in the dashboard; or
+- a **crontab** line on any host with Docker:
+  `0 4 * * 1 docker run --rm --env-file /etc/espk-trainer.env espk-trainer >> /var/log/espk-trainer.log 2>&1`.
+
+**Do not run it in GitHub Actions**: this repository is public and so are its Actions logs, which would expose the
+model metrics and the store's layout. Training needs a few GB of RAM for a few weeks of a busy org; it uses all cores.
+
 ## Game mechanics profiles
 
 `game/evrima.yaml` holds what the detector assumes about the game: how far each class can notice other players
@@ -265,12 +382,8 @@ modded server gets its own file that `extends: evrima` and overrides what differ
 
 - Per-class awareness ranges, and a map-aware null (e.g. shifting players within the same region).
 
-- **Label-free model: information leakage.** Train a self-supervised next-movement model on what a player could
-  legitimately know (own history, map context, players within awareness range), and a second model that also
-  sees players beyond awareness range. A player's evidence is how much the out-of-range players improve the
-  prediction of *their* movement (a conditional-mutual-information or Granger-style test). Honest players
-  should gain about nothing. Confounders are the same as for the heuristics: friends on voice chat, popular
-  destinations, stream sniping. Weak labels come from owner false-positive marks and bans, and recall can be
-  measured with synthetic cheating segments injected into real honest trajectories.
+- **Label-free model: information leakage.** Built as stage 1 (see "Leakage model"). Next: weak labels from owner
+  false-positive marks and bans, more ESP styles for the synthetic users (ambushes, relaying to a clan), and
+  rescoring stored windows after a promotion.
 - A pseudonymised training export (keyed-hash ids, no names, relative time) with its own retention, if data
   from several orgs is ever pooled.
