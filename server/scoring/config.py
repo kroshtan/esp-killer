@@ -28,8 +28,8 @@ class ScoringConfig(BaseModel):
     max_gap_s: Positive = 30.0  # longer gaps between samples mean "not present", not "interpolate"
 
     # --- shared ---
-    # How far a player can plausibly see, hear or smell another. Beyond this, heading for someone needs
-    # information the game does not give you.
+    # How far a player can plausibly notice another. Per class, this comes from the server's game profile
+    # (game/<profile>.yaml); this value is only the fallback when trajectories are built without a profile.
     awareness_m: Positive = 300.0
     # Players who spend this long within this radius of each other in the window are treated as a group (friends
     # on voice chat); heading for a group mate is never evidence.

@@ -22,6 +22,7 @@ import numpy as np
 
 from server.scoring.combine import OrgEvidence, PlayerScore, extract_evidence, score_evidence
 from server.scoring.config import ScoringConfig
+from server.scoring.game import load_profile
 from server.scoring.trajectories import from_frame
 from tools.sim.scenarios import CHEATERS, HONEST, archetypes, mixed_world, record
 
@@ -42,6 +43,7 @@ def run(seeds: Sequence[int], config: ScoringConfig, hours: float = 6.0) -> tupl
     :param hours: simulated time per server
     :return: scores from the first window only, and from the evidence summed over all windows
     """
+    profile = load_profile()
     first: list[Scored] = []
     accumulated: list[Scored] = []
     window = config.window_minutes * 60
@@ -53,7 +55,8 @@ def run(seeds: Sequence[int], config: ScoringConfig, hours: float = 6.0) -> tupl
         total = OrgEvidence()
         for i, start in enumerate(np.arange(0.0, hours * 3600 - window + 1, window)):
             chunk = frame[(frame["t"] >= start - context) & (frame["t"] < start + window)]
-            ev = extract_evidence([from_frame(chunk, f"sim-{seed}", config)], config, count_from=start)
+            tr = from_frame(chunk, f"sim-{seed}", config, profile)
+            ev = extract_evidence([tr], config, count_from=start)
             total = total + ev
             if i == 0:
                 first += [Scored(seed, arch[s.player_id], s) for s in score_evidence(ev, config)]

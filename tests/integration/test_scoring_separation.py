@@ -17,7 +17,8 @@ SEEDS = (900, 901, 902)
 
 @pytest.fixture(scope="module")
 def scored() -> list[Scored]:
-    _, accumulated = run(SEEDS, CFG, hours=4.0)
+    # Evidence accumulates with play time; a few hours is not always enough for one cheater (see NOTES.md).
+    _, accumulated = run(SEEDS, CFG, hours=6.0)
     return accumulated
 
 

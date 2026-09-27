@@ -10,18 +10,19 @@ from collections.abc import Callable
 
 import pandas as pd
 
+from server.scoring.game import GameProfile, load_profile
 from tools.sim.behaviours import AmbushCheater, BeelineCheater, Behaviour, GroupMember, Hunter, Roamer
-from tools.sim.world import World
+from tools.sim.world import DINO_CLASSES, World
 
 HONEST = ("roamer", "waterhole", "camper", "hunter", "group")
 CHEATERS = ("beeline_cheater", "ambush_cheater", "subtle_cheater")
 
-# Cheater archetype -> behaviour, given a random walking speed.
-CHEATER_BEHAVIOURS: dict[str, Callable[[float], Behaviour]] = {
-    "beeline_cheater": lambda speed: BeelineCheater(speed_mps=speed),
-    "ambush_cheater": lambda _speed: AmbushCheater(),
+# Cheater archetype -> behaviour, given a walking speed and the class's awareness range ("far" means beyond it).
+CHEATER_BEHAVIOURS: dict[str, Callable[[float, float], Behaviour]] = {
+    "beeline_cheater": lambda speed, aware: BeelineCheater(speed_mps=speed, awareness_m=aware),
+    "ambush_cheater": lambda _speed, aware: AmbushCheater(awareness_m=aware),
     # Hunts with ESP only 40% of the time and plays normally otherwise.
-    "subtle_cheater": lambda speed: BeelineCheater(speed_mps=speed, active_fraction=0.4),
+    "subtle_cheater": lambda speed, aware: BeelineCheater(speed_mps=speed, awareness_m=aware, active_fraction=0.4),
 }
 
 
@@ -36,6 +37,7 @@ def mixed_world(
     group_size: int = 3,
     cheaters: tuple[str, ...] = CHEATERS,
     half_size_m: float = 3000.0,
+    profile: GameProfile | None = None,
 ) -> World:
     """
     A server with every honest archetype and the given cheaters.
@@ -52,9 +54,11 @@ def mixed_world(
     :param group_size: players per group
     :param cheaters: archetypes from :data:`CHEATERS` to add, one player each
     :param half_size_m: half the map width
+    :param profile: game profile for per-class awareness (hunters and cheaters see with their class's range)
     :return: the world, at time 0
     :raises ValueError: for an unknown cheater archetype
     """
+    profile = profile or load_profile()
     unknown = set(cheaters) - set(CHEATER_BEHAVIOURS)
     if unknown:
         raise ValueError(f"unknown cheater archetype(s): {sorted(unknown)}")
@@ -71,16 +75,22 @@ def mixed_world(
         camper = Roamer(speed_mps=_speed(world), pois=pois, poi_bias=0.8, pause_s=(300.0, 900.0))
         world.add_player(camper, archetype="camper", join_at=_join_time(world))
     for _ in range(hunters):
-        world.add_player(
-            Hunter(speed_mps=_speed(world), pois=pois, poi_bias=0.3), archetype="hunter", join_at=_join_time(world)
-        )
+        cls = _dino_class(world)
+        hunter = Hunter(awareness_m=profile.awareness_m(cls), speed_mps=_speed(world), pois=pois, poi_bias=0.3)
+        world.add_player(hunter, archetype="hunter", join_at=_join_time(world), dino_class=cls)
     for _ in range(groups):
         leader = world.add_player(Roamer(speed_mps=5.0, pois=pois, poi_bias=0.5), archetype="group")
         for _ in range(group_size - 1):
             world.add_player(GroupMember(leader=leader, speed_mps=5.0), archetype="group", pos=leader.pos)
     for kind in cheaters:
-        world.add_player(CHEATER_BEHAVIOURS[kind](_speed(world)), archetype=kind, join_at=_join_time(world))
+        cls = _dino_class(world)
+        behaviour = CHEATER_BEHAVIOURS[kind](_speed(world), profile.awareness_m(cls))
+        world.add_player(behaviour, archetype=kind, join_at=_join_time(world), dino_class=cls)
     return world
+
+
+def _dino_class(world: World) -> str:
+    return str(world.rng.choice(DINO_CLASSES))
 
 
 def _join_time(world: World) -> float:

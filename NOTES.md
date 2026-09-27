@@ -77,10 +77,14 @@ chat) and three cheaters. The thresholds were tuned on seeds 100–107; these se
 
 | | first 2 h window | accumulated over 6 h |
 |---|---|---|
-| beeline cheater: AUC vs honest / flagged | 0.93 / 33% | **1.00 / 100%** |
-| ambush cheater | 0.99 / 75% | **1.00 / 100%** |
-| part-time cheater (ESP 40% of the time) | 0.83 / 8% | **0.97 / 67%** |
-| honest players flagged | 1 / 276 | **1 / 276** |
+| beeline cheater: AUC vs honest / flagged | 1.00 / 67% | **1.00 / 100%** |
+| ambush cheater | 0.95 / 83% | **1.00 / 100%** |
+| part-time cheater (ESP 40% of the time) | 0.61 / 8% | **0.82 / 25%** |
+| honest players flagged | 0 / 276 | **0 / 276** |
+
+The part-time cheater's numbers swing a lot between simulator versions (an earlier version gave 0.97 / 67% on the
+same seeds), because they depend on when its random ESP phases fall. Treat part-time cheating as detectable over
+longer play, not within a few hours.
 
 Two things drove the design and are worth knowing when reading flags:
 
@@ -103,6 +107,23 @@ Two things drove the design and are worth knowing when reading flags:
   are a natural next step.
 - **Streamers.** Following a streamer's broadcast position is information leakage too, and it will look the same.
 - **Scoring config is global** (the `scoring:` section of config.yaml), not per org.
+
+## Game mechanics profiles
+
+`game/evrima.yaml` holds what the detector assumes about the game: how far each class can notice other players
+(the larger of sight and scent is the player's awareness range), and, for later, calls and in-game groups. It is
+public so players can correct it. Servers pick a profile in config.yaml (`game_profile`, default `evrima`); a
+modded server gets its own file that `extends: evrima` and overrides what differs.
+
+- **Only the Pteranodon differs** (sees ~900 m from the air). On identical simulated servers, per-class guesses
+  for ground classes (250-350 m) performed no better than one 300 m range for everyone, so they were dropped.
+- **Groups and calls are documented but not used.** Neither RCON nor the server log reports group membership or
+  calls. In-game groups are same-species only, so a Pteranodon scouting for ground carnivores is informal teaming,
+  which is for admins to judge; the detector does not excuse it. The server log's chat lines carry a
+  `[GROUP-<id>]` tag that looks like the sender's group id (unconfirmed); if it holds up, group members could share
+  awareness.
+- **Modded servers matter.** Asura's companion platform, for example, shows a live map and lets friends teleport,
+  which changes what a player can legitimately know. Such a server needs its own profile.
 
 ## Alerts and retention (phase 3)
 

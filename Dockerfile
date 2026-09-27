@@ -14,6 +14,7 @@ RUN uv sync --frozen --no-dev --no-cache
 # The server imports only server/ and shared/. agent/ and tools/ are not needed at runtime.
 COPY server/ ./server/
 COPY shared/ ./shared/
+COPY game/ ./game/
 COPY docker/start.sh ./start.sh
 
 # A fixed uid, so a bind-mounted data directory can be chowned to match (`chown 10001:10001 ./data`). /app stays

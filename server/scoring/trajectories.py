@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from server.scoring.config import ScoringConfig
+from server.scoring.game import GameProfile
 
 REQUIRED_COLUMNS = ("t", "player_id", "x", "y")
 
@@ -24,6 +25,8 @@ class Trajectories:
     player_ids: list[str]
     pos: np.ndarray  # (T, P, 2) metres, NaN when absent
     classes: np.ndarray  # (T, P) object: class name or None
+    # (T, P) metres: how far each player could notice others at each moment, from their class at that moment.
+    awareness: np.ndarray
 
     @property
     def dt(self) -> float:
@@ -53,7 +56,9 @@ class Trajectories:
         return max(1, round(seconds / self.dt)) if self.dt > 0 else 1
 
 
-def from_frame(frame: pd.DataFrame, server_id: str, config: ScoringConfig) -> Trajectories:
+def from_frame(
+    frame: pd.DataFrame, server_id: str, config: ScoringConfig, profile: GameProfile | None = None
+) -> Trajectories:
     """
     Resample one server's position samples onto a regular grid.
 
@@ -61,6 +66,7 @@ def from_frame(frame: pd.DataFrame, server_id: str, config: ScoringConfig) -> Tr
         optionally ``dino_class``
     :param server_id: the server these samples belong to
     :param config: scoring config (grid step and maximum gap)
+    :param profile: game profile for per-class awareness ranges; without one, ``config.awareness_m`` for all
     :return: the trajectories; empty if there are fewer than two distinct sample times
     :raises ValueError: if a required column is missing
     """
@@ -70,7 +76,8 @@ def from_frame(frame: pd.DataFrame, server_id: str, config: ScoringConfig) -> Tr
     player_ids = sorted(frame["player_id"].unique().tolist())
     t0, t1 = float(frame["t"].min()) if len(frame) else 0.0, float(frame["t"].max()) if len(frame) else 0.0
     if len(frame) == 0 or t1 <= t0:
-        return Trajectories(server_id, np.zeros(0), player_ids, np.zeros((0, len(player_ids), 2)), np.empty((0, 0)))
+        empty = np.empty((0, len(player_ids)))
+        return Trajectories(server_id, np.zeros(0), player_ids, np.zeros((0, len(player_ids), 2)), empty, empty)
 
     grid = np.arange(t0, t1 + 1e-9, config.resample_s)
     pos = np.full((len(grid), len(player_ids), 2), np.nan)
@@ -93,4 +100,18 @@ def from_frame(frame: pd.DataFrame, server_id: str, config: ScoringConfig) -> Tr
         if has_class:
             cls = samples["dino_class"].to_numpy(dtype=object)[first]
             classes[ok, p] = cls[np.maximum(before[ok], 0)]
-    return Trajectories(server_id=server_id, t=grid, player_ids=player_ids, pos=pos, classes=classes)
+    return Trajectories(
+        server_id=server_id,
+        t=grid,
+        player_ids=player_ids,
+        pos=pos,
+        classes=classes,
+        awareness=_awareness(classes, config, profile),
+    )
+
+
+def _awareness(classes: np.ndarray, config: ScoringConfig, profile: GameProfile | None) -> np.ndarray:
+    if profile is None:
+        return np.full(classes.shape, config.awareness_m)
+    ranges = {c: profile.awareness_m(c) for c in set(classes.ravel().tolist())}
+    return np.vectorize(ranges.__getitem__, otypes=[float])(classes) if classes.size else np.empty(classes.shape)

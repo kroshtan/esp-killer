@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StringConstraints, model_validator
 
 from server.alerts.transform import MapTransform
 from server.keys import KEY_HASH_PATTERN
 from server.scoring.config import ScoringConfig
+from server.scoring.game import DEFAULT_PROFILE, GameProfile, load_profile
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class ServerEntry(BaseModel):
     key_hash: Annotated[str, StringConstraints(pattern=KEY_HASH_PATTERN)] | None = None
     # How this server's map coordinates are drawn in alert images; plain axes in metres until calibrated.
     map_transform: MapTransform | None = None
+    # Game mechanics profile (game/<name>.yaml): per-class sight and scent ranges. Modded servers can have their own.
+    game_profile: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_-]{0,62}$")] = DEFAULT_PROFILE
 
 
 class OrgEntry(BaseModel):
@@ -65,6 +68,26 @@ class OrgConfig(BaseModel):
         :return: the configured one, or the defaults
         """
         return self.scoring or ScoringConfig()
+
+    @model_validator(mode="after")
+    def _profiles_exist(self) -> "OrgConfig":
+        for org_id, org in self.orgs.items():
+            for server_id, server in org.servers.items():
+                try:
+                    load_profile(server.game_profile)
+                except (FileNotFoundError, ValueError) as e:
+                    raise ValueError(f"{org_id}/{server_id}: game_profile {server.game_profile!r}: {e}") from e
+        return self
+
+    def game_profiles(self, org_id: str) -> dict[str, GameProfile]:
+        """
+        Each of an org's servers' game profile.
+
+        :param org_id: the org
+        :return: server id -> profile
+        """
+        org = self.orgs.get(org_id)
+        return {sid: load_profile(s.game_profile) for sid, s in org.servers.items()} if org else {}
 
     def key_index(self) -> dict[str, "ServerIdentity"]:
         """

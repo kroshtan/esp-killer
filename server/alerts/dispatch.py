@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import httpx
+import numpy as np
 
 from server.alerts.discord import send_discord
 from server.alerts.email import send_email_async
@@ -26,6 +27,7 @@ from server.orgconfig import OrgConfig
 from server.scoring.config import ScoringConfig
 from server.scoring.features import beeline_episodes
 from server.scoring.job import epoch_seconds, to_trajectories
+from server.scoring.trajectories import Trajectories
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +143,18 @@ async def _send(
         raise DeliveryError(f"unknown channel {item.channel!r}", permanent=True)
 
 
+def present_last(tr: Trajectories, player_id: str) -> int:
+    """
+    Grid index of a player's last sighting in ``tr``.
+
+    :param tr: trajectories
+    :param player_id: the player
+    :return: the index (0 if never present)
+    """
+    seen = np.flatnonzero(tr.present[:, tr.player_ids.index(player_id)])
+    return int(seen[-1]) if len(seen) else 0
+
+
 def evidence_image(
     scoring: ScoringRepository, config: OrgConfig, flag: Flag, item: OutboxItem, settings: DispatchSettings
 ) -> bytes | None:
@@ -190,7 +204,8 @@ def _render(
             )
         )
 
-    (tr,) = [t for t in to_trajectories(frame, cfg) if t.server_id == server_id]
+    profiles = config.game_profiles(flag.org_id)
+    (tr,) = [t for t in to_trajectories(frame, cfg, profiles) if t.server_id == server_id]
     highlights = [
         Highlight(float(tr.t[e.start]), float(tr.t[e.arrival]), tr.player_ids[e.target])
         for e in beeline_episodes(tr, cfg, flag.player_id)
@@ -218,7 +233,8 @@ def _render(
         window_start_t=start.timestamp(),
         window_end_t=end.timestamp(),
         highlights=highlights,
-        awareness_m=cfg.awareness_m,
+        # The flagged player's own range, for their latest class.
+        awareness_m=float(tr.awareness[:, tr.player_ids.index(flag.player_id)][present_last(tr, flag.player_id)]),
         subtitle=f"{flag.org_id}/{server_id} · score {flag.score:.2f}",
     )
     return render_path_png(image, options)

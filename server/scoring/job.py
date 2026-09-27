@@ -15,7 +15,7 @@ Scores are evidence for a human. Nothing here kicks, bans or messages anyone.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -25,6 +25,7 @@ from server.db.scoring import FALSE_POSITIVE, OPEN, Flag, ScoringRepository
 from server.orgconfig import OrgConfig
 from server.scoring.combine import OrgEvidence, PlayerScore, extract_evidence, score_evidence
 from server.scoring.config import ScoringConfig
+from server.scoring.game import GameProfile, load_profile
 from server.scoring.trajectories import Trajectories, from_frame
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ def run_scoring(
     cfg = config.scoring_config
     results = []
     for org_id in config.orgs:
-        result = score_org_windows(repo, org_id, cfg, now, lag)
+        result = score_org_windows(repo, org_id, cfg, now, lag, profiles=config.game_profiles(org_id))
         results.append(result)
         if result.windows:
             logger.info(
@@ -73,7 +74,13 @@ def run_scoring(
 
 
 def score_org_windows(
-    repo: ScoringRepository, org_id: str, cfg: ScoringConfig, now: datetime, lag: timedelta
+    repo: ScoringRepository,
+    org_id: str,
+    cfg: ScoringConfig,
+    now: datetime,
+    lag: timedelta,
+    *,
+    profiles: Mapping[str, GameProfile] | None = None,
 ) -> OrgRunResult:
     """
     Process an org's pending windows, then re-score and flag.
@@ -83,6 +90,7 @@ def score_org_windows(
     :param cfg: scoring config
     :param now: current time
     :param lag: how long after a window's end before it is processed
+    :param profiles: game profile per server id; servers not listed use the default profile
     :return: what happened
     """
     result = OrgRunResult(org_id)
@@ -94,7 +102,7 @@ def score_org_windows(
     active: set[str] = set()
     while start + window <= now - lag and result.windows < MAX_WINDOWS_PER_RUN:
         end = start + window
-        ev = window_evidence(repo, org_id, cfg, start, end)
+        ev = window_evidence(repo, org_id, cfg, start, end, profiles=profiles)
         repo.save_window(org_id, end, ev)
         active.update(ev.player_ids)
         result.windows += 1
@@ -111,7 +119,13 @@ def score_org_windows(
 
 
 def window_evidence(
-    repo: ScoringRepository, org_id: str, cfg: ScoringConfig, start: datetime, end: datetime
+    repo: ScoringRepository,
+    org_id: str,
+    cfg: ScoringConfig,
+    start: datetime,
+    end: datetime,
+    *,
+    profiles: Mapping[str, GameProfile] | None = None,
 ) -> OrgEvidence:
     """
     Extract one window's evidence from the database.
@@ -121,18 +135,22 @@ def window_evidence(
     :param cfg: scoring config
     :param start: window start
     :param end: window end
+    :param profiles: game profile per server id
     :return: evidence counted inside ``[start, end)``
     """
     frame = repo.load_positions(org_id, start - timedelta(minutes=cfg.context_minutes), end)
-    return extract_evidence(to_trajectories(frame, cfg), cfg, count_from=start.timestamp())
+    return extract_evidence(to_trajectories(frame, cfg, profiles), cfg, count_from=start.timestamp())
 
 
-def to_trajectories(frame: pd.DataFrame, cfg: ScoringConfig) -> list[Trajectories]:
+def to_trajectories(
+    frame: pd.DataFrame, cfg: ScoringConfig, profiles: Mapping[str, GameProfile] | None = None
+) -> list[Trajectories]:
     """
     Convert stored positions (game units, datetimes) into one resampled trajectory set per server.
 
     :param frame: output of :meth:`ScoringRepository.load_positions`
     :param cfg: scoring config (units and grid)
+    :param profiles: game profile per server id; servers not listed use the default profile
     :return: one per server with data
     """
     if frame.empty:
@@ -147,7 +165,11 @@ def to_trajectories(frame: pd.DataFrame, cfg: ScoringConfig) -> list[Trajectorie
             "dino_class": frame["dino_class"],
         }
     )
-    return [from_frame(group, str(server_id), cfg) for server_id, group in samples.groupby("server_id", sort=True)]
+    profiles = profiles or {}
+    return [
+        from_frame(group, str(server_id), cfg, profiles.get(str(server_id)) or load_profile())
+        for server_id, group in samples.groupby("server_id", sort=True)
+    ]
 
 
 def epoch_seconds(timestamps: pd.Series) -> pd.Series:

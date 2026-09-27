@@ -2,6 +2,7 @@ import gzip
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from server.db.repository import Repository
@@ -51,3 +52,14 @@ def ingest_frame(repo: Repository, frame: pd.DataFrame, org_id: str, server_id: 
     ]
     for i in range(0, len(snapshots), 2000):
         repo.ingest(org_id, server_id, snapshots[i : i + 2000], start)
+
+
+DT = 5.0
+
+
+def track(player_id: str, points: list[tuple[float, float, float]], dino_class: str = "Troodon") -> pd.DataFrame:
+    """Samples every DT seconds along straight segments between (t, x, y) waypoints."""
+    ts = np.arange(points[0][0], points[-1][0] + 1e-9, DT)
+    xs = np.interp(ts, [p[0] for p in points], [p[1] for p in points])
+    ys = np.interp(ts, [p[0] for p in points], [p[2] for p in points])
+    return pd.DataFrame({"t": ts, "player_id": player_id, "x": xs, "y": ys, "dino_class": dino_class})

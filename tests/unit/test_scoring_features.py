@@ -12,18 +12,10 @@ from server.scoring.features import (
     spawn_episodes,
 )
 from server.scoring.trajectories import Trajectories, from_frame
+from tests.helpers import DT, track
 
-DT = 5.0
 # A short null shift so 20-minute test tracks have a null at all.
 CFG = ScoringConfig(null_shifts_s=(300.0,), near_lookback_s=60.0)
-
-
-def track(player_id: str, points: list[tuple[float, float, float]], dino_class: str = "Troodon") -> pd.DataFrame:
-    """Samples every DT seconds along straight segments between (t, x, y) waypoints."""
-    ts = np.arange(points[0][0], points[-1][0] + 1e-9, DT)
-    xs = np.interp(ts, [p[0] for p in points], [p[1] for p in points])
-    ys = np.interp(ts, [p[0] for p in points], [p[2] for p in points])
-    return pd.DataFrame({"t": ts, "player_id": player_id, "x": xs, "y": ys, "dino_class": dino_class})
 
 
 def world(*tracks: pd.DataFrame) -> Trajectories:

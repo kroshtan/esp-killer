@@ -324,6 +324,13 @@ Server owners who run the agent decide to collect this data about their players 
 players, for example in the server rules or on Discord, what is collected, why and for how long. This is not
 legal advice.
 
+## Game mechanics: help wanted
+
+What counts as suspicious depends on what a player could legitimately know: how far each species can see, smell
+and hear. Those assumptions live in [game/evrima.yaml](game/evrima.yaml), in plain YAML, and most are educated
+guesses. If you know the game well, corrections are very welcome as an issue or pull request, ideally saying how
+you checked. Modded servers can get their own profile file that overrides only what differs.
+
 ## License
 
 [Apache-2.0](LICENSE).

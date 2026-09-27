@@ -159,7 +159,8 @@ def beeline_evidence(
     An episode is a run of grid steps in which the player moves and heads within ``beeline_cos`` of the bearing to
     the same target, for at least ``beeline_min_duration_s`` while the target is out of range, where:
 
-    * the target was beyond ``awareness_m`` at the start and had not been within it for ``near_lookback_s``;
+    * the target was beyond the player's awareness range (from their class, see ``game/``) at the start and had
+      not been within it for ``near_lookback_s``;
     * the player stays lined up until the target comes within ``beeline_arrive_m`` (normally the awareness range;
       the run may end up to ``beeline_arrive_grace_s`` before that). What happens after sighting is not evidence;
     * the player *turned* onto the target: ``beeline_turn_lookback_s`` earlier they were not already heading for
@@ -236,7 +237,9 @@ def _beeline_episodes(
     with np.errstate(invalid="ignore", divide="ignore"):
         cos = (rel[..., 0] * heading[:, None, 0] + rel[..., 1] * heading[:, None, 1]) / (dist * heading_len[:, None])
         aligned = moving[:, None] & (cos >= config.beeline_cos)
-        near = dist <= config.awareness_m
+        # The player's own range, as it was at each moment (it changes when they respawn as another class).
+        aware = tr.awareness[:, i]
+        near = dist <= aware[:, None]
     aligned[:, i] = False
     aligned[:, assoc_row] = False
     near_recent = _recently(near, tr.steps(config.near_lookback_s))
@@ -251,11 +254,11 @@ def _beeline_episodes(
             if start < count_from or near_recent[start, j]:
                 continue
             with np.errstate(invalid="ignore"):
-                far_steps = int(np.sum(dist[start : end + 1, j] > config.awareness_m))
+                far_steps = int(np.sum(dist[start : end + 1, j] > aware[start : end + 1]))
             if far_steps < min_steps:
                 continue
             d0 = dist[start, j]
-            if not (config.awareness_m < d0 <= config.beeline_max_start_m):
+            if not (aware[start] < d0 <= config.beeline_max_start_m):
                 continue
             with np.errstate(invalid="ignore"):
                 reached = np.flatnonzero(dist[start : end + tail + 1, j] <= config.beeline_arrive_m)
@@ -343,8 +346,8 @@ def ambush_evidence(
     How often a player's waits end with the arrival of someone who was out of range when the wait began.
 
     A wait is a run of at least ``ambush_min_wait_s`` below ``stationary_speed_mps``. It is a hit if a non-group
-    player who was beyond ``awareness_m`` of the waiting spot at the start comes within ``ambush_radius_m`` of it
-    before the wait ends (plus ``ambush_grace_s``).
+    player who was beyond the waiting player's awareness range of the waiting spot at the start comes within
+    ``ambush_radius_m`` of it before the wait ends (plus ``ambush_grace_s``).
 
     :param tr: trajectories
     :param config: scoring config
@@ -399,7 +402,7 @@ def _ambush_hits(
         d[:, i] = np.nan
         d[:, assoc_row] = np.nan
         with np.errstate(invalid="ignore"):
-            far_at_start = d[0] > config.awareness_m
+            far_at_start = d[0] > tr.awareness[start, i]
             arrived = np.any(d <= config.ambush_radius_m, axis=0)
         if np.any(far_at_start & arrived):
             hits += 1

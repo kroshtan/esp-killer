@@ -1,0 +1,77 @@
+# Game mechanics for The Isle: Evrima, as the detector understands them.
+#
+# The detector asks one question over and over: "could this player have known where that player was?" The answer
+# depends on how far each species can see, smell and hear, which is what this file describes. It is public on
+# purpose: if you know the game, please correct it (open an issue or a pull request, ideally with how you measured
+# or where the number comes from).
+#
+# EVERY NUMBER HERE IS AN EDUCATED GUESS until someone who plays a lot checks it. Distances are metres
+# (1 m = 100 game units). Unknown classes use `defaults`.
+#
+# Modded servers can differ (bigger ranges, maps that show friends, teleports). Give them their own profile: a file
+# next to this one that starts with `extends: evrima` and overrides only what is different, and select it per
+# server in the operator's config.yaml (`game_profile: <name>`).
+#
+# This file holds game facts only. The detector's own thresholds (how unusual behaviour must be before a flag) are
+# operator settings and are not here.
+
+name: evrima
+description: Vanilla The Isle Evrima (2026 builds).
+
+# How far a player can plausibly notice another player. The detector uses the larger of sight and scent as a
+# player's awareness range: approaching someone from beyond it, persistently and directly, is what needs
+# explaining.
+defaults:
+  sight_m: 300      # spotting a moving dinosaur on the ground in mixed terrain; open plains are further, forest less
+  scent_m: 150      # smell mode: picking up another player (not following an old scent trail)
+  hearing_m: 800    # hearing another player's calls (only used once calls are observable, see `calls`)
+  flyer: false
+
+# Per-class differences from `defaults`. Only list what really differs; small differences between ground classes
+# made no measurable difference in the detector's evaluation, so they are not listed. Class names as the server
+# reports them, without the blueprint wrapping (so "Pteranodon", not "BP_Pteranodon_C").
+classes:
+  # Flyers see much further from the air. A Pteranodon heading straight for someone 800 m away may simply have
+  # seen them.
+  Pteranodon:
+    sight_m: 900
+    scent_m: 50
+    flyer: true
+
+# Calls reveal the caller's position to everyone in hearing range, for a while. NOT USED YET: RCON does not report
+# calls. If calls turn out to be readable (e.g. from the server log), a player who heard a call can go straight to
+# the caller without that being evidence.
+calls:
+  observed: false
+  relevance_s: 60   # how long a heard call still explains heading to where the caller was
+
+# The game's own groups. Information shared inside an in-game group is legitimate: if any member could notice a
+# player, the whole group may head for them. Teaming up outside the game's group system ("mixpacking") is for
+# server admins to judge, so it is never excused here.
+#
+# In vanilla Evrima, groups are same-species only (the game refuses cross-species invites), so a Pteranodon cannot
+# officially scout for ground carnivores. Group sizes are per species (see `max_group_size` below, from community
+# guides as of 2026; servers can change them).
+#
+# NOT USED YET: neither RCON nor the server log reports group membership. The most promising source is the server
+# log's chat lines, which carry a `[GROUP-<id>]` tag that looks like the sender's group id (unconfirmed).
+groups:
+  observed: false
+  shared_awareness_s: 120   # how long something one member noticed still explains the others heading there
+  mixed_species: false      # vanilla: same species only
+  max_group_size:
+    Beipiaosaurus: 12
+    Carnotaurus: 3
+    Ceratosaurus: 4
+    Deinosuchus: 2
+    Diabloceratops: 6
+    Dryosaurus: 10
+    Gallimimus: 8
+    Hypsilophodon: 10
+    Maiasaura: 9
+    Omniraptor: 8
+    Pachycephalosaurus: 8
+    Pteranodon: 6
+    Stegosaurus: 5
+    Tenontosaurus: 8
+    Troodon: 10
