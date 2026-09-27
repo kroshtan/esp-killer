@@ -78,7 +78,8 @@ host; someone (possibly you, see the [operator guide](#operator-guide)) runs the
 Download the agent from [GitHub Releases](https://github.com/kroshtan/esp-killer/releases) (tags `agent-v*`):
 `espk-agent` for Linux, `espk-agent.exe` for Windows. It is a single self-contained binary; no Python needed.
 
-Create `agent.toml` next to it (full example with comments: [agent.example.toml](agent.example.toml)):
+Create `agent.toml` next to it (full example with comments: [agent.example.toml](agent.example.toml); every
+setting and its environment variable: [docs/configuration.md](docs/configuration.md#agent-agenttoml)):
 
 ```toml
 [rcon]
@@ -166,6 +167,8 @@ wait in the local queue file (capped at 100 MiB, oldest dropped first) and are u
 
 Running the backend: an ingest API and a background worker (scoring, alerts, retention), one Docker image, one
 SQLite database on a shared volume.
+Every setting (environment variables, `config.yaml`, scoring thresholds) is listed in
+[docs/configuration.md](docs/configuration.md).
 
 ### Quick start
 
