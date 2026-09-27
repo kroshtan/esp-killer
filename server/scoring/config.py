@@ -51,9 +51,10 @@ class ScoringConfig(BaseModel):
     team_link_z: float = 3.0
     # Something a clanmate had in range counts as known to the whole clan for this long (voice chat).
     team_shared_awareness_s: Positive = 180.0
-    # Treat everyone as a potential teammate for knowledge: an approach is explained if ANY other player spotted the
-    # target shortly before. Covers clans, scouts and informal teams without having to infer them; what remains as
-    # evidence is heading straight for someone nobody could see.
+    # Treat everyone as a potential teammate for knowledge: an approach is explained if any other player spotted the
+    # target shortly before, from a distance and not as its companion (a group's own members, who always see each
+    # other, do not excuse a raid on it). Covers clans, scouts and informal teams without having to infer them; what
+    # remains as evidence is heading straight for someone no independent observer could see.
     explain_by_any_spotter: bool = True
 
     # A beeline that ends with the two peacefully together (within ``team_meet_radius_m`` for ``team_meet_min_s``,
@@ -84,14 +85,15 @@ class ScoringConfig(BaseModel):
     # start distance towards where the player started, the target's movement explains the meeting. This covers
     # people meeting head-on on a trail, and victims of cheaters (who are approached, or walk into an ambush).
     beeline_max_target_approach: Fraction = 0.3
-    # The target must not have been within awareness this recently: following someone you saw a few minutes ago
-    # (tracks, scent) is legitimate.
-    near_lookback_s: Positive = 300.0
+    # The target must not have been within awareness this recently: following someone you saw up to ten minutes ago
+    # (a long chase, tracks, scent) is legitimate.
+    near_lookback_s: Positive = 600.0
     beeline_min_moving_s: Positive = 600.0  # evidence gate: at least this much moving time in the window
     # Count z-score (observed vs null episodes): the sub-score rises linearly from 0 at the floor to 1 at full.
-    # A z of 2 happens by chance for about one player in fifty, so it must not count for anything on its own.
-    beeline_z_floor: float = 2.0
-    beeline_z_full: Positive = 6.0
+    # A z of 2 happens by chance for about one player in fifty, and legitimate hard cases (long chases, clans on
+    # simulated servers) reach 4-5; full-time ESP users are at 8-12. The floor favours fair players.
+    beeline_z_floor: float = 3.0
+    beeline_z_full: Positive = 7.0
 
     # --- time to contact: how quickly a freshly spawned player reaches someone, versus the org's baseline ---
     contact_m: Positive = 50.0

@@ -35,9 +35,10 @@ The guiding principle: **a false flag punishes a fair player, a missed cheater i
 Three behaviours are counted per player: **beelines** (lining up on someone out of sight and staying lined up
 until they come into range), **ambushes** (a wait during which someone who was out of range arrives and is killed)
 and **time to contact** after spawning. An approach does not count if anything else explains it: the player saw
-the target recently, **anyone else had it in view shortly before** (a clanmate, a scout, a friend on voice chat),
-a clanmate was already hunting it, or it ended in a peaceful reunion. What remains is heading straight for someone
-nobody could see, such as a lone clan member picked off far from anyone. Clans, mixed species included, are
+the target recently, **someone independent had it in view shortly before** (a clanmate, a scout, a friend on voice
+chat; not the target's own companions, so raiding a group is not excused by its members seeing each other), a
+clanmate was already hunting it, or it ended in a peaceful reunion. What remains is heading straight for someone
+nobody independent could see, such as a lone clan member picked off far from anyone. Clans, mixed species included, are
 inferred from behaviour (players who keep meeting up or tipping each other off), because the game exposes no group
 data.
 
@@ -48,7 +49,7 @@ playing time and not with an honest player's.
 
 On simulated servers (24 servers × 6 hours, including servers with rival clans hunting on each other's calls;
 seeds not used for tuning), **no honest player was flagged** (0 of 616), while full-time cheaters clearly stood out
-(AUC 0.87–1.00; 42–100% already flagged after 6 hours). Simulation is not reality: real thresholds need tuning on
+(AUC 0.88–1.00; 50–100% already flagged after 6 hours). Simulation is not reality: real thresholds need tuning on
 real servers with admin feedback. [NOTES.md](NOTES.md#scoring) has the method, the evaluation and the limitations.
 
 ## Server owner guide

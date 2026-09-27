@@ -195,7 +195,7 @@ def beeline_evidence(
     team = team if team is not None else np.zeros_like(assoc)
     disp, moving = _headings(tr, config)
     shifts = null_shifts(tr, config)
-    knowledge = _Knowledge(tr, config, disp, moving) if team.any() or anyone_sighting else None
+    knowledge = _Knowledge(tr, config, disp, moving, assoc) if team.any() or anyone_sighting else None
     died = deaths(tr, config)
     result = {}
     for i, player_id in enumerate(tr.player_ids):
@@ -232,15 +232,22 @@ class _Knowledge:
     """
     Who had whom in sight, and who was heading for whom, at every moment; built once per window.
 
-    ``shared(i, clanmates)`` answers "did a clanmate (or, optionally, anyone else) have the target in range, or was a
-    clanmate already heading for it, shortly before?" for every target and moment.
+    ``shared(i, clanmates)`` answers "did a clanmate (or, optionally, an independent spotter) have the target in range,
+    or was a clanmate already heading for it, shortly before?" for every target and moment.
+
+    An independent spotter is someone who had the target in their own range from a distance (further than
+    ``team_meet_radius_m``) and is not the target's companion or clanmate (``assoc``). Without that, a target's own
+    friends, who always "see" it, would excuse anyone raiding the group.
     """
 
-    def __init__(self, tr: Trajectories, config: ScoringConfig, disp: np.ndarray, moving: np.ndarray) -> None:
+    def __init__(
+        self, tr: Trajectories, config: ScoringConfig, disp: np.ndarray, moving: np.ndarray, assoc: np.ndarray
+    ) -> None:
         n = len(tr.player_ids)
         self.tr = tr
         self.share = tr.steps(config.team_shared_awareness_s)
         self.sight = np.zeros((n, len(tr.t), n), dtype=bool)  # sight[m, t, k]: m had k in range
+        self.spot = np.zeros((n, len(tr.t), n), dtype=bool)  # spot[m, t, k]: independently, from a distance
         self.pursue = np.zeros((n, len(tr.t), n), dtype=bool)  # pursue[m, t, k]: m was heading straight for k
         for m in range(n):
             rel = tr.pos - tr.pos[:, m : m + 1, :]
@@ -248,11 +255,13 @@ class _Knowledge:
             h = disp[:, m]
             with np.errstate(invalid="ignore", divide="ignore"):
                 self.sight[m] = dist <= tr.awareness[:, m][:, None]
+                self.spot[m] = self.sight[m] & (dist > config.team_meet_radius_m) & ~assoc[m][None, :]
                 cos = (rel[..., 0] * h[:, None, 0] + rel[..., 1] * h[:, None, 1]) / (dist * np.hypot(*h.T)[:, None])
                 self.pursue[m] = moving[:, m][:, None] & (cos >= config.beeline_cos)
             self.sight[m, :, m] = False
+            self.spot[m, :, m] = False
             self.pursue[m, :, m] = False
-        self.sight_count = self.sight.sum(axis=0)
+        self.spot_count = self.spot.sum(axis=0)
 
     def shared(self, i: int, clanmates: np.ndarray, *, anyone_sighting: bool) -> np.ndarray:
         """
@@ -260,7 +269,7 @@ class _Knowledge:
 
         :param i: the approaching player (their own knowledge is handled separately)
         :param clanmates: (P,) the player's clanmates: their sightings and their pursuits count
-        :param anyone_sighting: also count any other player's sightings. Not their pursuits: among strangers,
+        :param anyone_sighting: also count independent spotters' sightings. Not their pursuits: among strangers,
             "somebody was heading that way" means nothing (with enough players someone always is), so joining a hunt
             is a relay only between clanmates.
         :return: the shared-knowledge mask
@@ -269,7 +278,7 @@ class _Knowledge:
         clanmates[i] = False
         known = self.sight[clanmates].any(axis=0) | self.pursue[clanmates].any(axis=0)
         if anyone_sighting:
-            known |= self.sight_count - self.sight[i] > 0
+            known |= self.spot_count - self.spot[i] > 0
         return _recently(known, self.share)
 
 

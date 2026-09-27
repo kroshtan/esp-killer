@@ -58,10 +58,12 @@ player (`server/scoring/features.py`):
 - **Beeline:** the player lines up on someone out of their range, and stays lined up until that player comes into
   range. Evidence stops at sighting: whatever happens after (a charge, a fight) is legitimate. It does not count
   if the approach is explained some other way:
-  - the target was within the player's range in the last 5 minutes;
-  - **anyone else had the target within their own range shortly before** (3 minutes): a clanmate, a scout, a
-    friend on voice chat, whether or not we know they are a team. What remains is heading straight for a player
-    nobody could see, such as a lone clan member picked off far from anyone;
+  - the target was within the player's range in the last 10 minutes (following someone you saw, a long chase);
+  - **someone independent had the target within their own range shortly before** (3 minutes): a clanmate, a
+    scout, a friend on voice chat, whether or not we know they are a team. Independent means watching from a
+    distance (over 150 m) and not the target's own companion or clanmate: a group's members always see each other,
+    and that must not excuse ten players raiding it. What remains is heading straight for players nobody
+    independent could see, such as a lone clan member or a pair far from anyone;
   - a clanmate was already heading for the target (joining a hunt; the evidence stays with whoever started it);
   - the player was already heading that way before (the target stepped into their path), or the target came to
     the player (head-on meetings, being hunted);
@@ -86,8 +88,8 @@ clan inference only needs to be right about who never counts as a target.
 
 Counts are **additive**: each scoring run processes complete 2-hour windows (plus 30 minutes of context), stores
 per-player and per-pair counts, and scores from the sum over the last 7 days. A cheater's excess over the null
-grows with playing time; an honest player's does not. Sub-scores rise from 0 at z = 2 to 1 at z = 6 for beelines,
-4 to 8 for ambushes (without kill logs we cannot tell who killed the arriving player, so defending a base looks
+grows with playing time; an honest player's does not. Sub-scores rise from 0 at z = 3 to 1 at z = 7 for beelines
+(legitimate hard cases reach z 4-5 on simulated clan servers, full-time ESP users 8-12), 4 to 8 for ambushes (without kill logs we cannot tell who killed the arriving player, so defending a base looks
 like an ambush at z up to ~5; real ambushers are at 20+), and 1 to 3.5 for time to contact. They are combined with
 a weighted noisy-OR (beeline 1.0, ambush 0.9, time to contact 0.35), so time to contact alone never flags anyone.
 
@@ -101,11 +103,11 @@ accumulated over 6 hours per server:
 
 | | mixed servers | clan servers |
 |---|---|---|
-| honest players flagged | **0 / 276** (highest score 0.37) | **0 / 340** (highest 0.49) |
-| full-time beeline cheater: flagged / AUC | 58% / 0.98 | 42% / 0.87 |
+| honest players flagged | **0 / 276** (highest score 0.35) | **0 / 340** (highest 0.51) |
+| full-time beeline cheater: flagged / AUC | 50% / 0.97 | 58% / 0.88 |
 | ambush cheater | 100% / 1.00 | |
-| ESP member inside a clan | | 17% / 0.78 |
-| part-time cheater (ESP 40% of the time) | 25% / 0.68 | |
+| ESP member inside a clan | | 8% / 0.73 |
+| part-time cheater (ESP 40% of the time) | 8% / 0.62 | |
 
 Without "anyone's sighting explains" and the reunion and kill rules, the same clan servers flagged 13 of 173 honest
 players, almost all clan hunters answering calls; the cheaters were caught more often (83-100%). That trade was

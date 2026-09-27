@@ -43,7 +43,7 @@ def test_beeline_score_ramps_from_the_floor_and_is_gated_on_moving_time() -> Non
     at_floor = score_evidence(evidence("p", episodes=2, null=0.0), CFG)[0]  # z = 2
     assert at_floor.beeline is not None
     assert at_floor.beeline.score == 0
-    strong = score_evidence(evidence("p", episodes=10, null=1.0), CFG)[0]  # z = 6.4
+    strong = score_evidence(evidence("p", episodes=15, null=1.0), CFG)[0]  # z = 9.9
     assert strong.beeline is not None
     assert strong.beeline.score == 1
     assert strong.score == 1
@@ -53,7 +53,7 @@ def test_beeline_score_ramps_from_the_floor_and_is_gated_on_moving_time() -> Non
 
 
 def test_noisy_or_weights() -> None:
-    ev = evidence("p", episodes=10, null=1.0)
+    ev = evidence("p", episodes=15, null=1.0)
     ev.ambush["p"] = AmbushEvidence(waits=10, hits=10, null_hits=0.0)
     s = score_evidence(ev, CFG)[0]
     assert s.score == pytest.approx(1 - (1 - CFG.weight_beeline) * (1 - CFG.weight_ambush))

@@ -156,3 +156,22 @@ def test_tips_count_approaches_to_what_someone_else_saw() -> None:
     ev = tips[pair_key("hunter", "scout")]
     assert ev.tips >= 3
     assert ev.tips > ev.null_tips
+
+
+def test_a_groups_own_members_do_not_excuse_a_raid_on_it() -> None:
+    # Two friends travel together; a raider walks straight at them from 1.3 km. They "see" each other the whole time,
+    # but that is no independent sighting, so the raid is still evidence. A scout watching from 250 m excuses it.
+    # The pair are there until the raid reaches them (killed at t=260).
+    pair = [killed(track(p, [(0, 1300, dy), (400, 1300, dy)]), at=260) for p, dy in (("a", 0), ("b", 40))]
+    raider = track("raider", [(0, 0, 0), (60, 0, 0), (250, 1250, 0)])
+    tr = from_frame(pd.concat([*pair, raider], ignore_index=True), "srv", CFG)
+    assoc = associates(tr, CFG)
+    assoc[0, 1] = assoc[1, 0] = True  # the pair are companions
+    anyone = beeline_evidence(tr, CFG, assoc, team=np.zeros_like(assoc), anyone_sighting=True)
+    assert anyone["raider"].episodes == 1
+    scout = track("scout", [(0, 1300, -250), (400, 1300, -250)])
+    tr = from_frame(pd.concat([*pair, raider, scout], ignore_index=True), "srv", CFG)
+    assoc = associates(tr, CFG)
+    assoc[0, 1] = assoc[1, 0] = True
+    excused = beeline_evidence(tr, CFG, assoc, team=np.zeros_like(assoc), anyone_sighting=True)
+    assert excused["raider"].episodes == 0
