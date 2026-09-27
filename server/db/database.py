@@ -176,6 +176,16 @@ MIGRATIONS: list[str] = [
     ALTER TABLE pair_evidence ADD COLUMN tips INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE pair_evidence ADD COLUMN null_tips REAL NOT NULL DEFAULT 0;
     """,
+    # 6: which scoring windows have been exported to the training dataset.
+    """
+    CREATE TABLE export_state (
+        org_id      TEXT NOT NULL,
+        window_end  TEXT NOT NULL,
+        exported_at TEXT NOT NULL,
+        rows        INTEGER NOT NULL,
+        PRIMARY KEY (org_id, window_end)
+    );
+    """,
 ]
 
 

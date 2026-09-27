@@ -29,6 +29,9 @@ from server.orgconfig import ConfigStore
 from server.retention import RetentionPolicy, run_retention
 from server.scoring.job import OrgRunResult, run_scoring
 from server.settings import ServerSettings
+from server.training.export import ExportResult, export_pending
+from server.training.schema import Pseudonymiser
+from server.training.store import ObjectStore, open_store
 
 logger = logging.getLogger("server.worker")
 
@@ -41,6 +44,7 @@ class RunReport:
     queued: int = 0
     delivery: dict[str, int] = field(default_factory=dict)
     retention: dict[str, int] | None = None
+    export: ExportResult | None = None
 
 
 class Worker:
@@ -53,6 +57,11 @@ class Worker:
         self.alerts = AlertRepository(self.db)
         self.stop = threading.Event()
         self._last_retention: datetime | None = None
+        self.training_store: ObjectStore | None = None
+        self.pseudonymiser: Pseudonymiser | None = None
+        if settings.data_url and settings.export_key:
+            self.training_store = open_store(settings.data_url)
+            self.pseudonymiser = Pseudonymiser(settings.export_key.get_secret_value())
 
     def run_once(self, now: datetime | None = None, http: httpx.AsyncClient | None = None) -> RunReport:
         """
@@ -86,6 +95,12 @@ class Worker:
             )
         )
         report.delivery = asyncio.run(self._deliver(now, http))
+
+        # Export before retention, so windows reach the training dataset before their positions are deleted.
+        if self.training_store is not None and self.pseudonymiser is not None:
+            report.export = export_pending(
+                self.scoring, self.training_store, self.pseudonymiser, config.scoring_config, now=now
+            )
 
         if self._last_retention is None or now - self._last_retention >= RETENTION_EVERY:
             report.retention = run_retention(self.db, self.retention_policy(), now)

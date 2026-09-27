@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,5 +40,10 @@ class ServerSettings(BaseSettings):
     rejoin_gap_s: float = Field(default=600.0, gt=0)
     alert_max_attempts: int = Field(default=8, ge=1)
     alert_image_minutes: float = Field(default=30.0, gt=0)
+
+    # Training export (off unless both are set): where the private dataset lives (s3://bucket/prefix or a path; see
+    # server/training/store.py) and the key that pseudonymises player, server and org ids in it.
+    data_url: str | None = None
+    export_key: SecretStr | None = None
 
     log_level: str = "INFO"

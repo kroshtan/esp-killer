@@ -69,11 +69,12 @@ class ScoringRepository:
         :param org_id: the org
         :param since: inclusive start
         :param until: exclusive end
-        :return: columns server_id, player_id, player_name, dino_class, x, y (game units), server_ts (UTC text)
+        :return: columns server_id, player_id, player_name, dino_class, growth, x, y, z (game units), server_ts
+            (UTC text)
         """
         with self.db.connect() as conn:
             return pd.read_sql_query(
-                "SELECT server_id, player_id, player_name, dino_class, x, y, server_ts FROM positions"
+                "SELECT server_id, player_id, player_name, dino_class, growth, x, y, z, server_ts FROM positions"
                 " WHERE org_id = ? AND server_ts >= ? AND server_ts < ?",
                 conn,
                 params=(org_id, ts(since), ts(until)),
@@ -208,6 +209,57 @@ class ScoringRepository:
             (a, b): PairEvidence(int(meets), float(null_meets), int(tips), float(null_tips))
             for a, b, meets, null_meets, tips, null_tips in rows
         }
+
+    # --- training export ---
+
+    def unexported_windows(self, limit: int) -> list[tuple[str, datetime]]:
+        """
+        Scored windows not yet exported to the training dataset, oldest first.
+
+        :param limit: maximum number to return
+        :return: (org id, window end) pairs
+        """
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT e.org_id, e.window_end FROM evidence e"
+                " LEFT JOIN export_state x ON x.org_id = e.org_id AND x.window_end = e.window_end"
+                " WHERE x.org_id IS NULL ORDER BY e.window_end LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [(row[0], parse_ts(row[1])) for row in rows]
+
+    def window_rows(self, org_id: str, window_end: datetime) -> pd.DataFrame:
+        """
+        One window's per-player evidence, with its spawn episode counts.
+
+        :param org_id: the org
+        :param window_end: end of the window
+        :return: one row per player
+        """
+        with self.db.connect() as conn:
+            return pd.read_sql_query(
+                "SELECT e.player_id, e.moving_s, e.beeline_episodes, e.beeline_null, e.ambush_waits, e.ambush_hits,"
+                " e.ambush_null, (SELECT COUNT(*) FROM spawn_episodes s WHERE s.org_id = e.org_id"
+                " AND s.player_id = e.player_id AND s.window_end = e.window_end) AS spawn_episodes"
+                " FROM evidence e WHERE e.org_id = ? AND e.window_end = ?",
+                conn,
+                params=(org_id, ts(window_end)),
+            )
+
+    def mark_exported(self, org_id: str, window_end: datetime, rows: int, now: datetime) -> None:
+        """
+        Record that a window was exported.
+
+        :param org_id: the org
+        :param window_end: end of the window
+        :param rows: position rows exported
+        :param now: current time
+        """
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO export_state (org_id, window_end, exported_at, rows) VALUES (?, ?, ?, ?)",
+                (org_id, ts(window_end), ts(now), rows),
+            )
 
     # --- scores and flags ---
 
